@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
-from app import config, db, intake, review
+from app import config, db, history, intake, review
 
 app = FastAPI(title="Claim Intake Check")
 templates = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -119,6 +119,63 @@ async def review_queue(
         "error": error,
     }
     return templates.TemplateResponse(request, "review.html", context, status_code=400 if error else 200)
+
+
+def history_query(
+    run_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    outcome: str | None = None,
+) -> dict[str, str]:
+    """History filter values, trimmed. Shared by the page and the CSV export."""
+    values = {"run_id": run_id, "date_from": date_from, "date_to": date_to, "outcome": outcome}
+    return {name: (value or "").strip() for name, value in values.items()}
+
+
+def _history_filters(raw: dict[str, str]) -> review.Filters:
+    return review.parse_filters(raw["run_id"], None, raw["date_from"], raw["date_to"], raw["outcome"])
+
+
+@app.get("/history", response_class=HTMLResponse)
+async def history_page(
+    request: Request,
+    raw: dict[str, str] = Depends(history_query),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """Every claim checked, passed or flagged, with filters. Read-only."""
+    error, items = None, []
+    try:
+        items = review.history(conn, _history_filters(raw))
+    except review.FilterError as exc:
+        error = str(exc)
+    totals = {name: sum(item.outcome == name for item in items) for name in review.OUTCOMES}
+    context = {
+        "items": items,
+        "raw": raw,
+        "export_query": urlencode({k: v for k, v in raw.items() if v}),
+        "runs": review.list_runs(conn),
+        "outcomes": review.OUTCOMES,
+        "totals": totals,
+        "error": error,
+    }
+    return templates.TemplateResponse(request, "history.html", context, status_code=400 if error else 200)
+
+
+@app.get("/history.csv")
+async def history_csv(
+    raw: dict[str, str] = Depends(history_query),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """The history page's rows, with the same filters, as a CSV download."""
+    try:
+        filters = _history_filters(raw)
+    except review.FilterError as exc:
+        return PlainTextResponse(str(exc), status_code=400)
+    return Response(
+        history.to_csv(review.history(conn, filters)),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="claim-history.csv"'},
+    )
 
 
 @app.get("/claims/{claim_id:path}", response_class=HTMLResponse)
