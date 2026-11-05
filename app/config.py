@@ -31,3 +31,8 @@ COVERED_LOSS_TYPES: dict[str, list[str]] = {  # default — pending client confi
     "tpft": ["third_party", "theft"],
     "tpo": ["third_party"],
 }
+
+# Largest CSV intake accepted, in bytes, for an uploaded file or pasted text.
+# The 512-row demo file is about 100 KB. Matches Starlette's default 1 MiB
+# limit on a single form field.
+MAX_INTAKE_BYTES: int = 1_048_576  # team default (CIC-29)

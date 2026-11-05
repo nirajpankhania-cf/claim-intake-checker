@@ -245,3 +245,13 @@ def insert_flag(
         ),
     )
     return int(cur.lastrowid)
+
+
+def get_latest_run_for_claim(conn: sqlite3.Connection, claim_id: str) -> str | None:
+    """The ``run_id`` that most recently recorded a result for ``claim_id``."""
+    row = conn.execute(
+        "SELECT run_id FROM check_results WHERE claim_id = ?"
+        " ORDER BY checked_at DESC, id DESC LIMIT 1",
+        (claim_id,),
+    ).fetchone()
+    return row["run_id"] if row is not None else None

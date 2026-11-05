@@ -26,6 +26,13 @@
 | 2026-11-05 | Scenario claims are tagged `SCENARIO Sn:` in `description` for demo use only; rules never read them | Team, PR #6 |
 | 2026-11-05 | S8 resubmissions and S9 malformed rows exist only in `data/claims.csv`, since the DB can't store them | Team, PR #6 |
 | 2026-11-05 | Clean generated claims are reported within 21 days and use `COVERED_LOSS_TYPES`, so they stay clean if the window changes | Team, PR #6 |
+| 2026-11-05 | `check_results.claim_id` and `flags.claim_id` have no foreign key to `claims`: intake records rows that never became claims (S8 resubmissions, S9 malformed rows) | Team, CIC-29 |
+| 2026-11-05 | S8 and S9 rows are recorded as a `NEEDS_REVIEW` result plus an `INTAKE` flag with the reason, the line number and the raw row; S8 names the earlier run (or earlier line in the same file). No schema change | Team, CIC-29 |
+| 2026-11-05 | Intake rows are keyed `ROW-<run_id>-<line_no>` when the claim_id is missing, is a resubmission, or is already used by a stored claim, so they never share a key with a real claim | Team, CIC-29 |
+| 2026-11-05 | Intake trims and uppercases `claim_id` and `policy_number` before validating and before the S8 check; other free text is stored verbatim | Team, CIC-29 |
+| 2026-11-05 | Intake validates formats only (required fields, strict `YYYY-MM-DD`, allowed values, plain decimals); date logic stays in the rules. CSV columns must match exactly, in any order | Team, CIC-29 |
+| 2026-11-05 | Default `MAX_INTAKE_BYTES = 1 MiB`, for uploaded files and pasted text alike | Team default, CIC-29 |
+| 2026-11-05 | Run contract: `create_run(conn, source, claim_count)` (intake) → `run_checks(conn, run_id, claim_ids)` (runner, CIC-28, no commit inside) → `record_intake_flags(conn, run_id, rows)` (intake), all in one transaction | Team, CIC-29 |
 
 ## Scenarios
 
@@ -38,8 +45,8 @@
 | S5 | Loss type not covered by cover type | R1b | Needs review |
 | S6 | Reported more than 30 days after loss | R2 | Needs review |
 | S7 | Different claim ID, same policy + loss date | R3 | Needs review |
-| S8 | Same claim ID submitted again | intake | Skipped, logged |
-| S9 | Required field missing or date unparseable | intake | Needs review |
+| S8 | Same claim ID submitted again | intake | Skipped, not re-checked; Needs review (`INTAKE` flag) |
+| S9 | Required field missing or date unparseable | intake | Needs review (`INTAKE` flag) |
 | S10 | Claimed amount above policy limit | R4 | Stretch — pending Karn |
 | S11 | None of the above | — | Ready for adjuster |
 
