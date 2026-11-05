@@ -84,7 +84,7 @@ Tags sit at the start of `description`. Search for them in the demo.
 | `SCENARIO S2` | loss 1 day before effective date | DB + CSV | R1 |
 | `SCENARIO S3` | loss 1 day after expiry / on cancellation date | DB + CSV | R1 |
 | `SCENARIO S4` | loss on expiry date | DB + CSV | none (expiry day covered by default) |
-| `SCENARIO S5` | glass not covered by tpo | DB + CSV | R1b |
+| `SCENARIO S5` | theft not covered by tpo | DB + CSV | R1b |
 | `SCENARIO S6` | late report 31 days | DB + CSV | R2 |
 | `SCENARIO S7` | duplicate of CLM-000123 | DB + CSV | R3 |
 | `SCENARIO S8` | original submission / resubmission of CLM-… | original in DB, resubmission CSV only | intake: skip and log |
