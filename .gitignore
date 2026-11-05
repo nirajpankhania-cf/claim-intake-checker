@@ -19,7 +19,8 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Local data
+# Local data (regenerate with `make seed`)
+data/
 *.sqlite
 *.sqlite3
 *.db
