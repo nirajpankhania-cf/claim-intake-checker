@@ -183,7 +183,7 @@ def _parse_row(raw: dict[str, str]) -> tuple[Claim | None, list[str]]:
         return None
 
     def choice(name: str, allowed: tuple[str, ...]) -> str | None:
-        value = raw[name].strip()
+        value = raw[name].strip().lower()
         if value and value not in allowed:
             problems.append(f"{name} {value!r} is not one of: {', '.join(allowed)}")
         return value
@@ -217,7 +217,7 @@ def _parse_row(raw: dict[str, str]) -> tuple[Claim | None, list[str]]:
         "claimed_amount": amount,
         "third_party_involved": flag_text == "true",
         "police_reference": text("police_reference"),
-        "attachments": [a for a in raw["attachments"].split(";") if a.strip()],
+        "attachments": [a.strip() for a in raw["attachments"].split(";") if a.strip()],
         "submitted_via": choice("submitted_via", SUBMITTED_VIA),
     }
     if problems:
@@ -321,6 +321,9 @@ def ingest_csv(conn: sqlite3.Connection, text: str, run_checks: RunChecks) -> In
     """
     batch = parse_csv(text)
     with conn:
+        # Take the write lock before the resubmission check, so two uploads of
+        # the same new claim_id can't both pass it.
+        conn.execute("BEGIN IMMEDIATE")
         new_claims, skipped = split_resubmissions(conn, batch)
         run_id = create_run(conn, "csv", batch.row_count)
         for claim in new_claims:

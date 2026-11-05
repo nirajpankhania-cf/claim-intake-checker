@@ -312,3 +312,37 @@ def test_oversized_paste_gets_our_message(
 def test_intake_form_renders(client: tuple[TestClient, FakeRunChecks, Path]) -> None:
     response = client[0].get("/intake")
     assert response.status_code == 200 and 'name="csv_text"' in response.text
+
+
+def test_values_are_case_insensitive_and_attachments_trimmed() -> None:
+    batch = intake.parse_csv(to_csv([row(loss_type="Theft", submitted_via="EMAIL", attachments=" a.jpg ; b.pdf ")]))
+    (_, claim, _), = batch.accepted
+    assert (claim.loss_type, claim.submitted_via, claim.attachments) == ("theft", "email", ["a.jpg", "b.pdf"])
+
+
+def test_bad_file_gets_400_even_without_a_runner(tmp_path: Path) -> None:
+    async def test_db() -> AsyncIterator[sqlite3.Connection]:
+        connection = db.get_connection(tmp_path / "app.db")
+        db.init_db(connection)
+        yield connection
+        connection.close()
+
+    app.dependency_overrides[get_db] = test_db  # real get_run_checks, no runner yet
+    try:
+        response = TestClient(app).post("/intake/csv", data={"csv_text": "not,a,claim\n"})
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 400 and "missing columns" in response.text
+
+
+def test_concurrent_resubmission_waits_for_the_lock(tmp_path: Path) -> None:
+    path = tmp_path / "lock.db"
+    first, second = db.get_connection(path), db.get_connection(path)
+    db.init_db(first)
+    second.execute("PRAGMA busy_timeout = 0")
+    first.execute("BEGIN IMMEDIATE")
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        intake.ingest_csv(second, to_csv([row()]), FakeRunChecks())
+    first.rollback()
+    assert intake.ingest_csv(second, to_csv([row()]), FakeRunChecks()).accepted == 1
+    first.close(); second.close()

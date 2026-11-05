@@ -30,7 +30,7 @@
 | 2026-11-05 | S8 and S9 rows are recorded as a `NEEDS_REVIEW` result plus an `INTAKE` flag with the reason, the line number and the raw row; S8 names the earlier run (or earlier line in the same file). No schema change | Team, CIC-29 |
 | 2026-11-05 | Intake rows are keyed `ROW-<run_id>-<line_no>` when the claim_id is missing, is a resubmission, or is already used by a stored claim, so they never share a key with a real claim | Team, CIC-29 |
 | 2026-11-05 | Intake trims and uppercases `claim_id` and `policy_number` before validating and before the S8 check; other free text is stored verbatim | Team, CIC-29 |
-| 2026-11-05 | Intake validates formats only (required fields, strict `YYYY-MM-DD`, allowed values, plain decimals); date logic stays in the rules. CSV columns must match exactly, in any order | Team, CIC-29 |
+| 2026-11-05 | Intake validates formats only (required fields, strict `YYYY-MM-DD`, allowed values matched case-insensitively, plain decimals); date logic stays in the rules. CSV columns must match exactly, in any order | Team, CIC-29 |
 | 2026-11-05 | Default `MAX_INTAKE_BYTES = 1 MiB`, for uploaded files and pasted text alike | Team default, CIC-29 |
 | 2026-11-05 | Run contract: `create_run(conn, source, claim_count)` (intake) → `run_checks(conn, run_id, claim_ids)` (runner, CIC-28, no commit inside) → `record_intake_flags(conn, run_id, rows)` (intake), all in one transaction | Team, CIC-29 |
 

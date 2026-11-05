@@ -34,8 +34,16 @@ async def get_db() -> AsyncIterator[sqlite3.Connection]:
 
 
 def get_run_checks() -> intake.RunChecks:
-    """The rule runner (CIC-28). Imported per request so tests can override it."""
-    from app.runner import run_checks  # type: ignore[attr-defined]
+    """The rule runner (CIC-28), overridable in tests.
+
+    The import happens on first call, not here, so an unusable file still gets
+    a 400 even before the runner exists.
+    """
+
+    def run_checks(conn: sqlite3.Connection, run_id: str, claim_ids: list[str]) -> None:
+        from app.runner import run_checks as runner  # type: ignore[attr-defined]
+
+        runner(conn, run_id, claim_ids)
 
     return run_checks
 
