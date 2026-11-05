@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
 from app import config, db, history, intake, review
+from app.models import LOSS_TYPES, SUBMITTED_VIA
 
 app = FastAPI(title="Claim Intake Check")
 templates = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -116,6 +117,7 @@ async def review_queue(
         "raw": {"run_id": run_id or "", "rule": rule or "", "date_from": date_from or "", "date_to": date_to or ""},
         "rule_ids": review.rule_ids(conn),
         "summary": _intake_summary(request),
+        "form_results": _form_results(conn, filters.run_id),
         "error": error,
     }
     return templates.TemplateResponse(request, "review.html", context, status_code=400 if error else 200)
@@ -198,6 +200,13 @@ async def claim_detail(
     )
 
 
+def _form_results(conn: sqlite3.Connection, run_id: str | None) -> list[sqlite3.Row]:
+    """For a run from the single-claim form, each claim's outcome (for the banner)."""
+    if not run_id or review.run_source(conn, run_id) != "form":
+        return []
+    return review.run_results(conn, run_id)
+
+
 def _intake_summary(request: Request) -> dict[str, int] | None:
     """Counts passed on the intake redirect, if all are present and whole numbers."""
     names = ("accepted", "skipped", "malformed")
@@ -205,6 +214,72 @@ def _intake_summary(request: Request) -> dict[str, int] | None:
     if not all(v.isascii() and v.isdecimal() for v in values):
         return None
     return {n: int(v) for n, v in zip(names, values)}
+
+
+FIELD_LABELS: dict[str, str] = {
+    "claim_id": "Claim ID",
+    "policy_number": "Policy number",
+    "policyholder_name": "Policyholder name",
+    "claimant_name": "Claimant name (if not the policyholder)",
+    "vehicle_reg": "Vehicle registration",
+    "loss_date": "Loss date",
+    "report_date": "Report date",
+    "loss_type": "Loss type",
+    "loss_location": "Loss location",
+    "description": "Description",
+    "claimed_amount": "Claimed amount",
+    "third_party_involved": "Third party involved",
+    "police_reference": "Police reference",
+    "attachments": "Attachment file names (separate with ;)",
+    "submitted_via": "Submitted via",
+}
+
+
+@app.get("/intake/claim", response_class=HTMLResponse)
+def claim_form(request: Request) -> Response:
+    return _claim_form(request, {"submitted_via": "form"})
+
+
+@app.post("/intake/claim")
+async def submit_claim(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+    run_checks: intake.RunChecks = Depends(get_run_checks),
+) -> Response:
+    """Primary intake path: one claim. Errors re-show the form; nothing is stored."""
+    form = await request.form()
+    # A file part sent under a field name is treated as a missing value.
+    raw = {name: value if isinstance(value := form.get(name), str) else "" for name in intake.COLUMNS}
+    claim, errors = intake.parse_claim_fields(raw)
+    if claim is None:
+        return _claim_form(request, raw, errors)
+    try:
+        run_id = intake.submit_claim(conn, claim, run_checks)
+    except intake.ClaimAlreadySubmitted as exc:
+        return _claim_form(request, raw, {"claim_id": str(exc)}, existing_claim_id=exc.claim_id)
+    return RedirectResponse(f"/review?{urlencode({'run_id': run_id})}", status_code=303)
+
+
+def _claim_form(
+    request: Request,
+    values: dict[str, str],
+    errors: dict[str, str] | None = None,
+    existing_claim_id: str | None = None,
+) -> Response:
+    return templates.TemplateResponse(
+        request,
+        "intake_claim.html",
+        {
+            "values": values,
+            "errors": errors or {},
+            "labels": FIELD_LABELS,
+            "required": intake.REQUIRED,
+            "loss_types": LOSS_TYPES,
+            "submitted_via": SUBMITTED_VIA,
+            "existing_claim_id": existing_claim_id,
+        },
+        status_code=400 if errors else 200,
+    )
 
 
 def _form(request: Request, error: str | None = None, status_code: int = 200) -> Response:

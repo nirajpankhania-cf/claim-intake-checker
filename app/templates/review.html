@@ -10,6 +10,9 @@
   <p>Claims that raised at least one flag. This list is for a person to look at; it does not approve, deny or pay anything.</p>
   <p><a href="/intake">Submit claims</a></p>
 
+  {% for result in form_results %}
+    <p role="status">Submission checked: <a href="/claims/{{ result.claim_id | urlencode }}">{{ result.claim_id }}</a> is {{ "Ready for adjuster" if result.outcome == "READY_FOR_ADJUSTER" else "Needs review" }}.</p>
+  {% endfor %}
   {% if summary %}
     <p role="status">Upload checked: {{ summary.accepted }} accepted, {{ summary.skipped }} skipped as resubmissions, {{ summary.malformed }} malformed.</p>
   {% endif %}
