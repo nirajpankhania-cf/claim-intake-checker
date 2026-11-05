@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claim intake</title>
+</head>
+<body>
+  <h1>Claim intake: CSV</h1>
+  <p>Claims are checked and flagged for review. Nothing here approves, denies or pays a claim.</p>
+  {% if error %}
+    <p role="alert"><strong>Nothing was stored.</strong> {{ error }}</p>
+  {% endif %}
+  <form method="post" action="/intake/csv" enctype="multipart/form-data">
+    <p>
+      <label for="file">CSV file</label>
+      <input type="file" id="file" name="file" accept=".csv,text/csv">
+    </p>
+    <p>
+      <label for="csv_text">Or paste CSV</label><br>
+      <textarea id="csv_text" name="csv_text" rows="10" cols="100"></textarea>
+    </p>
+    <p>Columns (any order): <code>{{ columns | join(", ") }}</code>. Limit: {{ "{:,}".format(max_bytes) }} bytes.</p>
+    <button type="submit">Check claims</button>
+  </form>
+</body>
+</html>

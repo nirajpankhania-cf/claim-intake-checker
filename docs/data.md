@@ -52,6 +52,7 @@ The schema has CHECK constraints for enum columns (`cover_type`, `loss_type`,
 | `insert_run(conn, source, claim_count)` | returns a new `run_id` |
 | `insert_result(conn, run_id, claim_id, outcome)` | one `check_results` row |
 | `insert_flag(conn, run_id, claim_id, flag)` | one `flags` row |
+| `get_latest_run_for_claim(conn, claim_id)` | the most recent `run_id` with a result for that claim, or `None` |
 | `row_to_policy`, `row_to_claim`, `row_to_flag` | DB row back to the dataclass |
 
 Helpers don't commit. Wrap them in a transaction:
@@ -87,8 +88,8 @@ Tags sit at the start of `description`. Search for them in the demo.
 | `SCENARIO S5` | theft not covered by tpo | DB + CSV | R1b |
 | `SCENARIO S6` | late report 31 days | DB + CSV | R2 |
 | `SCENARIO S7` | duplicate of CLM-000123 | DB + CSV | R3 |
-| `SCENARIO S8` | original submission / resubmission of CLM-… | original in DB, resubmission CSV only | intake: skip and log |
-| `SCENARIO S9` | loss_date not a real date | CSV only | intake: needs review |
+| `SCENARIO S8` | original submission / resubmission of CLM-… | original in DB, resubmission CSV only | intake: `INTAKE` flag, not re-checked |
+| `SCENARIO S9` | loss_date not a real date | CSV only | intake: `INTAKE` flag |
 | `SCENARIO S10` | claimed amount above policy limit | DB + CSV | none yet (R4 is stretch) |
 | `BOUNDARY` | loss on effective date; report at 29 / 30 days | DB + CSV | none |
 
@@ -102,3 +103,15 @@ Columns use the dataclass field names, in the same order. Dates are ISO,
 booleans are `true` / `false`, `attachments` is `;`-separated, and an empty
 cell means null. `data/claims.csv` has 512 rows: the 500 DB claims, 6 S8
 resubmissions and 6 S9 malformed rows.
+
+## CSV intake (`app/intake.py`)
+
+`GET /intake` shows a form to upload a CSV or paste one. `POST /intake/csv`
+checks it and redirects (303) to `/review?run_id=…&accepted=…&skipped=…&malformed=…`.
+
+- **Whole-file errors** (not UTF-8, over `MAX_INTAKE_BYTES`, empty, missing,
+  unexpected or repeated columns) store nothing and show the form again.
+- **Accepted rows** are inserted as claims and checked by the runner.
+- **S8 resubmissions** and **S9 malformed rows** are not checked. Each gets a
+  `NEEDS_REVIEW` result and an `INTAKE` flag; see `docs/decisions.md` for the
+  `ROW-<run_id>-<line_no>` key.
