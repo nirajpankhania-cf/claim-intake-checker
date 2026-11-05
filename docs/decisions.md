@@ -33,6 +33,9 @@
 | 2026-11-05 | Intake validates formats only (required fields, strict `YYYY-MM-DD`, allowed values matched case-insensitively, plain decimals); date logic stays in the rules. CSV columns must match exactly, in any order | Team, CIC-29 |
 | 2026-11-05 | Default `MAX_INTAKE_BYTES = 1 MiB`, for uploaded files and pasted text alike | Team default, CIC-29 |
 | 2026-11-05 | Run contract: `create_run(conn, source, claim_count)` (intake) → `run_checks(conn, run_id, claim_ids)` (runner, CIC-28, no commit inside) → `record_intake_flags(conn, run_id, rows)` (intake), all in one transaction | Team, CIC-29 |
+| 2026-11-05 | Review queue lists every `NEEDS_REVIEW` result that has flags, newest run first, one row per claim per run. `INTAKE` rows (S8, S9) are included | Team, CIC-30 |
+| 2026-11-05 | Queue filters: rule, flag date (UTC date of the flag, both ends inclusive) and run. Status filter waits for reviewed status in CIC-32 | Team, CIC-30 |
+| 2026-11-05 | Review and claim pages are read-only GET pages with no actions; filters are a plain GET form, no JavaScript needed | Team, CIC-30 |
 
 ## Scenarios
 

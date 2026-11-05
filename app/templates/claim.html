@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claim {{ claim_id }}</title>
+</head>
+<body>
+  <p><a href="/review">Back to review queue</a></p>
+  <h1>Claim {{ claim_id }}</h1>
+  <p>Shows what was flagged, why and when. Nothing on this page approves, denies or pays a claim.</p>
+
+  {% if claim %}
+    <h2>Claim as submitted</h2>
+    <dl>
+      <dt>Policy number</dt><dd>{{ claim.policy_number }}</dd>
+      <dt>Policyholder</dt><dd>{{ claim.policyholder_name }}</dd>
+      <dt>Claimant</dt><dd>{{ claim.claimant_name or "—" }}</dd>
+      <dt>Vehicle registration</dt><dd>{{ claim.vehicle_reg }}</dd>
+      <dt>Loss date</dt><dd>{{ claim.loss_date.isoformat() }}</dd>
+      <dt>Report date</dt><dd>{{ claim.report_date.isoformat() }}</dd>
+      <dt>Loss type</dt><dd>{{ claim.loss_type }}</dd>
+      <dt>Loss location</dt><dd>{{ claim.loss_location or "—" }}</dd>
+      <dt>Claimed amount</dt><dd>{{ claim.claimed_amount }} (shown, not verified)</dd>
+      <dt>Third party involved</dt><dd>{{ "Yes" if claim.third_party_involved else "No" }}</dd>
+      <dt>Police reference</dt><dd>{{ claim.police_reference or "—" }}</dd>
+      <dt>Attachments</dt><dd>{{ claim.attachments | join(", ") if claim.attachments else "—" }}</dd>
+      <dt>Submitted via</dt><dd>{{ claim.submitted_via }}</dd>
+      <dt>Description</dt><dd><pre>{{ claim.description or "—" }}</pre></dd>
+    </dl>
+  {% else %}
+    <p>This ID is an intake row that was not stored as a claim. The row as submitted is shown with its flag below.</p>
+  {% endif %}
+
+  <h2>Check history</h2>
+  {% if not history %}
+    <p>No check results recorded for this claim yet.</p>
+  {% endif %}
+  {% for item in history %}
+    <section>
+      {% if item.claim_id != claim_id %}
+        <p>Resubmission of this claim, recorded as <a href="/claims/{{ item.claim_id | urlencode }}">{{ item.claim_id }}</a>.</p>
+      {% endif %}
+      <h3>Run <code>{{ item.run_id }}</code> ({{ item.source }}, {{ item.run_started_at.isoformat() }}): {{ "Needs review" if item.outcome == "NEEDS_REVIEW" else "Ready for adjuster" }}</h3>
+      {% if not item.flags %}<p>No flags.</p>{% endif %}
+      {% for flag in item.flags %}
+        <article>
+          <p><strong>{{ flag.rule_id }}</strong>, flagged {{ flag.created_at.isoformat() }}</p>
+          <p>{{ flag.reason }}</p>
+          {% if flag.inputs.row %}
+            <table>
+              <caption>Row as submitted (line {{ flag.inputs.line_no }})</caption>
+              {% for name, value in flag.inputs.row.items() %}
+                <tr><th scope="row">{{ name }}</th><td><pre>{{ value }}</pre></td></tr>
+              {% endfor %}
+            </table>
+          {% else %}
+            <details><summary>Values checked</summary>
+              <dl>{% for name, value in flag.inputs.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>
+            </details>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% endfor %}
+</body>
+</html>

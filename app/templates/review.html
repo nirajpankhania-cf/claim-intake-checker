@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review queue</title>
+</head>
+<body>
+  <h1>Review queue</h1>
+  <p>Claims that raised at least one flag. This list is for a person to look at; it does not approve, deny or pay anything.</p>
+  <p><a href="/intake">Submit claims</a></p>
+
+  {% if summary %}
+    <p role="status">Upload checked: {{ summary.accepted }} accepted, {{ summary.skipped }} skipped as resubmissions, {{ summary.malformed }} malformed.</p>
+  {% endif %}
+  {% if error %}
+    <p role="alert"><strong>Filter not applied.</strong> {{ error }}</p>
+  {% endif %}
+
+  <form method="get" action="/review">
+    {% if raw.run_id %}<input type="hidden" name="run_id" value="{{ raw.run_id }}">{% endif %}
+    <label for="rule">Rule</label>
+    <select id="rule" name="rule">
+      <option value="">All rules</option>
+      {% for rule_id in rule_ids %}
+        <option value="{{ rule_id }}" {% if rule_id == raw.rule %}selected{% endif %}>{{ rule_id }}</option>
+      {% endfor %}
+    </select>
+    <label for="date_from">Flagged from</label>
+    <input type="date" id="date_from" name="date_from" value="{{ raw.date_from }}">
+    <label for="date_to">to</label>
+    <input type="date" id="date_to" name="date_to" value="{{ raw.date_to }}">
+    <button type="submit">Filter</button>
+    <a href="/review{% if raw.run_id %}?run_id={{ raw.run_id | urlencode }}{% endif %}">Clear</a>
+  </form>
+  {% if filters.run_id %}
+    <p>Showing run <code>{{ filters.run_id }}</code> only. <a href="/review">Show all runs</a></p>
+  {% endif %}
+
+  <p>{{ items | length }} flagged {{ "claim" if items | length == 1 else "claims" }}.</p>
+  {% if items %}
+  <table>
+    <thead>
+      <tr><th>Claim</th><th>Policy</th><th>Rules</th><th>Reasons</th><th>Flagged on</th><th>Run</th></tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td><a href="/claims/{{ item.claim_id | urlencode }}">{{ item.claim_id }}</a></td>
+        <td>{{ item.claim.policy_number if item.claim else "—" }}</td>
+        <td>{{ item.rule_ids | join(", ") }}</td>
+        <td><ul>{% for flag in item.flags %}<li>{{ flag.reason }}</li>{% endfor %}</ul></td>
+        <td>{{ item.flagged_on.isoformat() }}</td>
+        <td><a href="/review?run_id={{ item.run_id | urlencode }}"><code>{{ item.run_id[:8] }}</code></a> ({{ item.source }})</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</body>
+</html>

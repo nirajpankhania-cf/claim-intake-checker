@@ -11,12 +11,12 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
-from app import config, db, intake
+from app import config, db, intake, review
 
 app = FastAPI(title="Claim Intake Check")
 templates = Jinja2Templates(directory=Path(__file__).with_name("templates"))
@@ -92,6 +92,62 @@ async def intake_csv(
         }
     )
     return RedirectResponse(f"/review?{query}", status_code=303)
+
+
+@app.get("/review", response_class=HTMLResponse)
+async def review_queue(
+    request: Request,
+    run_id: str | None = None,
+    rule: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """Flagged claims only, with rule and date filters. Read-only."""
+    error, items = None, []
+    try:
+        filters = review.parse_filters(run_id, rule, date_from, date_to)
+        items = review.review_queue(conn, filters)
+    except review.FilterError as exc:
+        error, filters = str(exc), review.Filters()
+    context = {
+        "items": items,
+        "filters": filters,
+        "raw": {"run_id": run_id or "", "rule": rule or "", "date_from": date_from or "", "date_to": date_to or ""},
+        "rule_ids": review.rule_ids(conn),
+        "summary": _intake_summary(request),
+        "error": error,
+    }
+    return templates.TemplateResponse(request, "review.html", context, status_code=400 if error else 200)
+
+
+@app.get("/claims/{claim_id:path}", response_class=HTMLResponse)
+async def claim_detail(
+    request: Request, claim_id: str, conn: sqlite3.Connection = Depends(get_db)
+) -> Response:
+    """One claim's fields and every result and flag recorded for it. Read-only."""
+    # Intake stores claim ids trimmed and uppercased; ROW- keys contain a
+    # lowercase run id, so try the id exactly as given first.
+    for candidate in dict.fromkeys((claim_id, claim_id.strip().upper())):
+        claim = review.get_claim(conn, candidate)
+        history = review.claim_history(conn, candidate)
+        if claim is not None or history:
+            claim_id = candidate
+            break
+    else:
+        raise HTTPException(status_code=404, detail="No claim or intake row with that ID.")
+    return templates.TemplateResponse(
+        request, "claim.html", {"claim_id": claim_id, "claim": claim, "history": history}
+    )
+
+
+def _intake_summary(request: Request) -> dict[str, int] | None:
+    """Counts passed on the intake redirect, if all are present and whole numbers."""
+    names = ("accepted", "skipped", "malformed")
+    values = [request.query_params.get(n, "") for n in names]
+    if not all(v.isascii() and v.isdecimal() for v in values):
+        return None
+    return {n: int(v) for n, v in zip(names, values)}
 
 
 def _form(request: Request, error: str | None = None, status_code: int = 200) -> Response:
