@@ -23,8 +23,8 @@ Client = tuple[TestClient, FakeRunChecks, Path]
 
 def form_data(**overrides: str) -> dict[str, str]:
     data = row(**overrides)
-    if data["third_party_involved"] != "true":
-        del data["third_party_involved"]  # an unticked checkbox isn't sent
+    if not data["third_party_involved"]:
+        del data["third_party_involved"]  # no Yes/No chosen: the field isn't sent
     return data
 
 
@@ -95,6 +95,7 @@ def test_checkbox_and_normalised_ids(client: Client) -> None:  # noqa: F811
         ("report_date", "", "report_date is missing"),
         ("loss_type", "flood", "is not one of"),
         ("claimed_amount", "lots", "is not a number"),
+        ("third_party_involved", "", "third_party_involved is missing"),
     ],
 )
 def test_errors_reshow_the_form_and_store_nothing(
@@ -169,3 +170,34 @@ def test_csv_runs_do_not_show_the_form_banner(client: Client) -> None:  # noqa: 
 def test_intake_pages_link_to_each_other(client: Client) -> None:  # noqa: F811
     assert 'href="/intake/claim"' in client[0].get("/intake").text
     assert 'href="/intake"' in client[0].get("/intake/claim").text
+
+
+def test_every_field_has_a_label() -> None:
+    from app.main import FIELD_LABELS
+
+    assert tuple(FIELD_LABELS) == intake.COLUMNS
+
+
+def test_ids_already_in_check_history_cannot_be_reused(client: Client) -> None:  # noqa: F811
+    """A ROW- key normally has a lowercase run id, so an uppercased form id can't
+    match it; this covers the rare all-digit run id, which can."""
+    test_client, fake, path = client
+    conn = db.get_connection(path)
+    db.init_db(conn)
+    with conn:
+        db.insert_run(conn, "csv", 1, run_id="123")
+        db.insert_result(conn, "123", "ROW-123-2", "NEEDS_REVIEW")
+    conn.close()
+    response = test_client.post("/intake/claim", data=form_data(claim_id="row-123-2"))
+    assert response.status_code == 400 and "ROW-123-2 has already been submitted" in response.text
+    assert count(path, "claims") == 0
+
+
+def test_file_part_under_a_field_name_counts_as_missing(client: Client) -> None:  # noqa: F811
+    data = form_data()
+    del data["description"]
+    response = client[0].post(
+        "/intake/claim", data={**data, "claim_id": ""}, files={"vehicle_reg": ("x.txt", b"AB12 CDE", "text/plain")}
+    )
+    assert response.status_code == 400
+    assert re.search(r'<span id="vehicle_reg-error" role="alert">vehicle_reg is missing</span>', response.text)

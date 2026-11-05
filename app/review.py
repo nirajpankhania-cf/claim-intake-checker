@@ -221,11 +221,15 @@ def history(conn: sqlite3.Connection, filters: Filters) -> list[QueueItem]:
     return [item for item in items if filters.matches_history(item)]
 
 
+def run_source(conn: sqlite3.Connection, run_id: str) -> str | None:
+    row = conn.execute("SELECT source FROM check_runs WHERE run_id = ?", (run_id,)).fetchone()
+    return row["source"] if row is not None else None
+
+
 def run_results(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]:
-    """The run's source and each claim's latest outcome in it."""
+    """Each claim's latest outcome in one run."""
     return conn.execute(
-        "SELECT ru.source, r.claim_id, r.outcome FROM check_results r"
-        " JOIN check_runs ru ON ru.run_id = r.run_id"
+        "SELECT r.claim_id, r.outcome FROM check_results r"
         " WHERE r.run_id = ? AND r.id = (SELECT MAX(id) FROM check_results"
         " WHERE run_id = r.run_id AND claim_id = r.claim_id)"
         " ORDER BY r.id",

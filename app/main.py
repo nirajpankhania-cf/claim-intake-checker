@@ -202,10 +202,9 @@ async def claim_detail(
 
 def _form_results(conn: sqlite3.Connection, run_id: str | None) -> list[sqlite3.Row]:
     """For a run from the single-claim form, each claim's outcome (for the banner)."""
-    if not run_id:
+    if not run_id or review.run_source(conn, run_id) != "form":
         return []
-    rows = review.run_results(conn, run_id)
-    return rows if rows and rows[0]["source"] == "form" else []
+    return review.run_results(conn, run_id)
 
 
 def _intake_summary(request: Request) -> dict[str, int] | None:
@@ -249,8 +248,8 @@ async def submit_claim(
 ) -> Response:
     """Primary intake path: one claim. Errors re-show the form; nothing is stored."""
     form = await request.form()
-    raw = {name: str(form.get(name) or "") for name in intake.COLUMNS}
-    raw["third_party_involved"] = "true" if form.get("third_party_involved") else "false"
+    # A file part sent under a field name is treated as a missing value.
+    raw = {name: value if isinstance(value := form.get(name), str) else "" for name in intake.COLUMNS}
     claim, errors = intake.parse_claim_fields(raw)
     if claim is None:
         return _claim_form(request, raw, errors)

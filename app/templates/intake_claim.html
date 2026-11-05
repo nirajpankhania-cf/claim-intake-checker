@@ -52,10 +52,14 @@
     {{ field("loss_location") }}
     {{ field("description", "textarea") }}
     {{ field("claimed_amount") }}
-    <p>
-      <input type="checkbox" id="third_party_involved" name="third_party_involved" value="true" {% if values.get("third_party_involved") == "true" %}checked{% endif %}>
-      <label for="third_party_involved">{{ labels.third_party_involved }}</label>
-    </p>
+    <fieldset {% if "third_party_involved" in errors %}aria-invalid="true" aria-describedby="third_party_involved-error"{% endif %}>
+      <legend>{{ labels.third_party_involved }} (required)</legend>
+      {% for value, text in (("true", "Yes"), ("false", "No")) %}
+        <input type="radio" id="third_party_involved_{{ value }}" name="third_party_involved" value="{{ value }}" required {% if values.get("third_party_involved", "").strip().lower() == value %}checked{% endif %}>
+        <label for="third_party_involved_{{ value }}">{{ text }}</label>
+      {% endfor %}
+      {% if "third_party_involved" in errors %}<br><span id="third_party_involved-error" role="alert">{{ errors.third_party_involved }}</span>{% endif %}
+    </fieldset>
     {{ field("police_reference") }}
     {{ field("attachments") }}
     {{ choice("submitted_via", submitted_via) }}

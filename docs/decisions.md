@@ -40,7 +40,8 @@
 | 2026-11-05 | History CSV export has the page's rows and filters: one row per claim per run, rule ids joined with `;`, reasons joined with ` \| `. UTF-8 with a BOM so Excel reads it correctly. If a run recorded a claim twice, the latest result wins | Team, CIC-31 |
 | 2026-11-05 | CSV export cells whose first non-space character is `=`, `+`, `-` or `@`, or that start with a tab, carriage return or newline, get a leading `'` so spreadsheets don't run submitted text as a formula | Team, CIC-31 |
 | 2026-11-05 | Single-claim form uses the same field checks as a CSV row (`intake.parse_claim_fields`). Invalid input re-shows the form with an error beside each field and stores nothing; it is not recorded as S9 | Team, CIC-38 |
-| 2026-11-05 | A form claim_id already on file is refused with a link to the existing claim, and nothing is stored (S8 on the form). CSV still records S8 as an `INTAKE` flag | Team, CIC-38 |
+| 2026-11-05 | A form claim_id already in use (a stored claim, or any key in the check history such as a `ROW-` key) is refused with a link, and nothing is stored (S8 on the form). CSV still records S8 as an `INTAKE` flag and uses the same in-use check | Team, CIC-38 |
+| 2026-11-05 | `third_party_involved` is a required Yes/No choice on the form with no default, so an unanswered question is an error, not a silent No | Team, CIC-38 |
 | 2026-11-05 | A form submission is its own run (`source = form`, `claim_count = 1`) and redirects to `/review?run_id=…`, whose banner states the claim's outcome | Team, CIC-38 |
 
 ## Scenarios

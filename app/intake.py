@@ -255,7 +255,7 @@ def split_resubmissions(
                           ["claim_id appears earlier in this file"], raw,
                           earlier_line_no=first_line[claim.claim_id])
             )
-        elif db.claim_exists(conn, claim.claim_id):
+        elif db.claim_id_in_use(conn, claim.claim_id):
             skipped.append(
                 IntakeRow(line_no, "resubmission", claim.claim_id,
                           ["claim_id is already on file"], raw,
@@ -361,7 +361,7 @@ def submit_claim(conn: sqlite3.Connection, claim: Claim, run_checks: RunChecks) 
     """
     with conn:
         conn.execute("BEGIN IMMEDIATE")
-        if db.claim_exists(conn, claim.claim_id):
+        if db.claim_id_in_use(conn, claim.claim_id):
             raise ClaimAlreadySubmitted(claim.claim_id)
         run_id = create_run(conn, "form", 1)
         db.insert_claim(conn, claim)

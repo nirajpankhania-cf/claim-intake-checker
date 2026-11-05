@@ -247,6 +247,20 @@ def insert_flag(
     return int(cur.lastrowid)
 
 
+def claim_id_in_use(conn: sqlite3.Connection, claim_id: str) -> bool:
+    """True if a stored claim or any recorded result already uses ``claim_id``.
+
+    Covers intake's ``ROW-<run_id>-<line_no>`` keys, which have results but no
+    stored claim, so a new claim can never share their history.
+    """
+    row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM claims WHERE claim_id = ?)"
+        " OR EXISTS (SELECT 1 FROM check_results WHERE claim_id = ?)",
+        (claim_id, claim_id),
+    ).fetchone()
+    return bool(row[0])
+
+
 def get_latest_run_for_claim(conn: sqlite3.Connection, claim_id: str) -> str | None:
     """The ``run_id`` that most recently recorded a result for ``claim_id``."""
     row = conn.execute(
