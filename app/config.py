@@ -16,3 +16,18 @@ DUPLICATE_MATCH_FIELDS: list[str] = [  # default — pending client confirmation
     "policy_number",
     "loss_date",
 ]
+
+# Which loss types each cover type pays out on. Keys are Policy.cover_type
+# values; lists are Claim.loss_type values (see app/models.py).
+COVERED_LOSS_TYPES: dict[str, list[str]] = {  # default — pending client confirmation
+    "comprehensive": [
+        "collision",
+        "theft",
+        "glass",
+        "vandalism",
+        "weather",
+        "third_party",
+    ],
+    "tpft": ["third_party", "theft"],
+    "tpo": ["third_party"],
+}
