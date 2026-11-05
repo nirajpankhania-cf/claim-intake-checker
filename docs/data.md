@@ -115,3 +115,14 @@ checks it and redirects (303) to `/review?run_id=…&accepted=…&skipped=…&ma
 - **S8 resubmissions** and **S9 malformed rows** are not checked. Each gets a
   `NEEDS_REVIEW` result and an `INTAKE` flag; see `docs/decisions.md` for the
   `ROW-<run_id>-<line_no>` key.
+
+## Review pages (`app/review.py`)
+
+Read-only. Queries are shared with the history page (CIC-31).
+
+- `GET /review?run_id=&rule=&date_from=&date_to=` lists flagged results,
+  newest run first. A bad date shows an error and no rows (400). The intake
+  redirect's `accepted`, `skipped` and `malformed` counts show as a banner.
+- `GET /claims/{claim_id}` shows the claim as submitted and every result and
+  flag recorded for it. For an `INTAKE` row with no stored claim it shows the
+  raw row from the flag. Unknown IDs are 404.
