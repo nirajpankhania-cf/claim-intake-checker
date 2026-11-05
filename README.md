@@ -15,6 +15,34 @@ make install
 This creates a `.venv` virtual environment and installs `requirements.txt`.
 Set `PYTHON=python3.11` if `python3` on your PATH is a different version.
 
+## Demo data
+
+```sh
+make seed
+```
+
+Runs `scripts/generate_data.py`, which builds `claim_intake.db` (SQLite) and
+exports `data/policies.csv` and `data/claims.csv`. The output is synthetic and
+identical on every run (fixed seed 4242 and a fixed reference date of
+2026-10-31), so `data/` and `*.db` are not committed. To regenerate, delete
+`claim_intake.db` first, because the generator won't write into a DB that
+already has data. Set `CIC_DB_PATH` to use a different DB file.
+
+What you get:
+
+- 200 car policies and 500 claims in the DB. About 88% of the claims are clean.
+- At least 6 claims for each scenario S1–S10 (see `docs/decisions.md`). Each
+  is tagged at the start of its `description`, e.g.
+  `SCENARIO S6: late report 41 days.`, so you can find it in the demo.
+  Clean boundary cases are tagged `BOUNDARY: ...`. No rule reads these tags.
+- `data/claims.csv` holds the same 500 claims plus 12 rows the DB can't store:
+  S8 resubmissions (a repeated `claim_id`) and S9 malformed rows (missing
+  fields, bad dates). It is the sample file for the CSV upload path.
+
+To create an empty DB with only the schema, run `python -m scripts.seed [path]`.
+
+See `docs/data.md` for the schema, storage formats and CSV format.
+
 ## Run
 
 ```sh
@@ -40,10 +68,13 @@ app/            FastAPI app, routes, templates
 app/config.py   every rule threshold, with its default and client decision
 app/rules/      one module per rule; pure functions (claim, policy, context) -> Flag | None
 app/runner.py   runs all rules on a batch, writes check_runs + flags
-app/db.py       schema + helpers
-scripts/generate_data.py   synthetic data generator (the only data source)
+app/schema.sql  SQLite schema (tables, indexes, append-only triggers)
+app/db.py       connection, init_db(), typed insert/get helpers, row -> dataclass converters
+scripts/generate_data.py   synthetic data generator (the only data source); `make seed`
+scripts/seed.py            creates an empty DB from the schema
+data/           generated CSVs (gitignored)
 tests/
-docs/           client_brief.md, meeting_notes.md, decisions.md
+docs/           client_brief.md, meeting_notes.md, decisions.md, data.md
 ```
 
 ## Rules we follow

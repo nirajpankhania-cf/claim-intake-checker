@@ -17,6 +17,15 @@
 | 2026-11-05 | R1 and R1b return nothing when the policy is missing; R0 is the only flag for an unknown policy | Niraj, PR #3 |
 | 2026-11-05 | A cover type absent from config covers nothing (flags, doesn't crash) | Niraj, PR #3 |
 | 2026-11-05 | R4 amount-over-limit is stretch only, pending Karn's answer | Team |
+| 2026-11-05 | Schema lives in `app/schema.sql`; `app/db.py` uses plain `sqlite3`, no ORM | Team, PR #5 |
+| 2026-11-05 | Dates stored as ISO text; money stored as text so `Decimal` round-trips exactly | Team, PR #5 |
+| 2026-11-05 | `check_results` and `flags` are append-only, enforced by DB triggers as well as by having no UPDATE/DELETE helpers | Team, PR #5 |
+| 2026-11-05 | `claims.policy_number` has no foreign key to `policies`: a claim on an unknown policy is valid input that R0 flags | Team, PR #5 |
+| 2026-11-05 | DB helpers don't commit; the caller owns the transaction (`with conn:`) | Team, PR #5 |
+| 2026-11-05 | Generator is deterministic (seed 4242, reference date 2026-10-31); generated `data/` and `*.db` are not committed | Team, PR #6 |
+| 2026-11-05 | Scenario claims are tagged `SCENARIO Sn:` in `description` for demo use only; rules never read them | Team, PR #6 |
+| 2026-11-05 | S8 resubmissions and S9 malformed rows exist only in `data/claims.csv`, since the DB can't store them | Team, PR #6 |
+| 2026-11-05 | Clean generated claims are reported within 21 days and use `COVERED_LOSS_TYPES`, so they stay clean if the window changes | Team, PR #6 |
 
 ## Scenarios
 
