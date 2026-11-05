@@ -126,3 +126,13 @@ Read-only. Queries are shared with the history page (CIC-31).
 - `GET /claims/{claim_id}` shows the claim as submitted and every result and
   flag recorded for it. For an `INTAKE` row with no stored claim it shows the
   raw row from the flag. Unknown IDs are 404.
+
+## History and export (`app/history.py`)
+
+- `GET /history?run_id=&date_from=&date_to=&outcome=` lists every result,
+  passed or flagged, with totals per outcome. Dates filter on when the
+  result was recorded, since passed claims have no flags.
+- `GET /history.csv` with the same filters downloads the same rows. Columns:
+  `run_id, run_started_at, source, claim_id, policy_number, outcome,
+  checked_at, rule_ids, reasons`. Cells that a spreadsheet would treat as a
+  formula get a leading `'`.

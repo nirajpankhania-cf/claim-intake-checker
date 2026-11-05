@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Check history</title>
+</head>
+<body>
+  <h1>Check history</h1>
+  <p>Every claim checked, with its outcome and any flags. This is a record of what the checks found; it does not approve, deny or pay anything.</p>
+  <p><a href="/review">Review queue</a> · <a href="/intake">Submit claims</a></p>
+
+  {% if error %}
+    <p role="alert"><strong>Filter not applied.</strong> {{ error }}</p>
+  {% endif %}
+
+  <form method="get" action="/history">
+    <label for="run_id">Run</label>
+    <select id="run_id" name="run_id">
+      <option value="">All runs</option>
+      {% for run in runs %}
+        <option value="{{ run.run_id }}" {% if run.run_id == raw.run_id %}selected{% endif %}>{{ run.started_at[:16] | replace("T", " ") }} UTC, {{ run.source }}, {{ run.claim_count }} rows</option>
+      {% endfor %}
+    </select>
+    <label for="date_from">Checked from</label>
+    <input type="date" id="date_from" name="date_from" value="{{ raw.date_from }}">
+    <label for="date_to">to</label>
+    <input type="date" id="date_to" name="date_to" value="{{ raw.date_to }}">
+    <label for="outcome">Outcome</label>
+    <select id="outcome" name="outcome">
+      <option value="">All outcomes</option>
+      {% for value, label in outcomes.items() %}
+        <option value="{{ value }}" {% if value == raw.outcome %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+    <a href="/history">Clear</a>
+  </form>
+
+  {% if not error %}
+    <p role="status">{{ items | length }} {{ "claim" if items | length == 1 else "claims" }} checked: {{ totals.READY_FOR_ADJUSTER }} ready for adjuster, {{ totals.NEEDS_REVIEW }} need review.
+      <a href="/history.csv{% if export_query %}?{{ export_query }}{% endif %}" download>Export CSV</a></p>
+  {% endif %}
+
+  {% if items %}
+  <table>
+    <thead>
+      <tr><th>Claim</th><th>Policy</th><th>Outcome</th><th>Rules</th><th>Reasons</th><th>Checked</th><th>Run</th></tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td><a href="/claims/{{ item.claim_id | urlencode }}">{{ item.claim_id }}</a></td>
+        <td>{{ item.claim.policy_number if item.claim else "—" }}</td>
+        <td>{{ outcomes[item.outcome] }}</td>
+        <td>{{ item.rule_ids | join(", ") or "—" }}</td>
+        <td>{% if item.flags %}<ul>{% for flag in item.flags %}<li>{{ flag.reason }}</li>{% endfor %}</ul>{% else %}—{% endif %}</td>
+        <td>{{ item.checked_on.isoformat() }}</td>
+        <td><a href="/history?run_id={{ item.run_id | urlencode }}"><code>{{ item.run_id[:8] }}</code></a> ({{ item.source }})</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</body>
+</html>

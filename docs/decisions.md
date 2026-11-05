@@ -36,6 +36,9 @@
 | 2026-11-05 | Review queue lists every `NEEDS_REVIEW` result that has flags, newest run first, one row per claim per run. `INTAKE` rows (S8, S9) are included | Team, CIC-30 |
 | 2026-11-05 | Queue filters: rule, flag date (UTC date of the flag, both ends inclusive) and run. Status filter waits for reviewed status in CIC-32 | Team, CIC-30 |
 | 2026-11-05 | Review and claim pages are read-only GET pages with no actions; filters are a plain GET form, no JavaScript needed | Team, CIC-30 |
+| 2026-11-05 | History lists every result, passed or flagged, newest run first, one row per claim per run. Filters: run, check date (UTC date of the result, both ends inclusive) and outcome | Team, CIC-31 |
+| 2026-11-05 | History CSV export has the page's rows and filters: one row per claim per run, rule ids joined with `;`, reasons joined with ` \| `. UTF-8 with a BOM so Excel reads it correctly. If a run recorded a claim twice, the latest result wins | Team, CIC-31 |
+| 2026-11-05 | CSV export cells whose first non-space character is `=`, `+`, `-` or `@`, or that start with a tab, carriage return or newline, get a leading `'` so spreadsheets don't run submitted text as a formula | Team, CIC-31 |
 
 ## Scenarios
 
