@@ -116,6 +116,14 @@ checks it and redirects (303) to `/review?run_id=…&accepted=…&skipped=…&ma
   `NEEDS_REVIEW` result and an `INTAKE` flag; see `docs/decisions.md` for the
   `ROW-<run_id>-<line_no>` key.
 
+## Single-claim form
+
+`GET /intake/claim` shows a form with one field per `Claim` field.
+`POST /intake/claim` checks it with the same rules as a CSV row. Errors
+re-show the form and store nothing; a claim_id already on file is refused.
+A valid claim is stored and checked as its own `form` run, then the browser
+is sent to `/review?run_id=…`, which states the claim's outcome.
+
 ## Review pages (`app/review.py`)
 
 Read-only. Queries are shared with the history page (CIC-31).

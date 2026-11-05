@@ -134,7 +134,8 @@ def parse_csv(text: str) -> ParsedBatch:
                     IntakeRow(start, "malformed", claim_id, problems, raw)
                 )
                 continue
-            claim, problems = _parse_row(raw)
+            claim, errors = parse_claim_fields(raw)
+            problems = list(errors.values())
             if claim is None:
                 batch.malformed.append(
                     IntakeRow(start, "malformed", claim_id, problems, raw)
@@ -163,9 +164,16 @@ def _check_header(header: list[str]) -> None:
         raise IntakeFileError("The CSV header is wrong (" + "; ".join(problems) + ").")
 
 
-def _parse_row(raw: dict[str, str]) -> tuple[Claim | None, list[str]]:
-    """Build a ``Claim`` from a row, or list what's wrong with its format."""
-    problems = [f"{name} is missing" for name in COLUMNS if name in REQUIRED and not raw[name].strip()]
+def parse_claim_fields(raw: dict[str, str]) -> tuple[Claim | None, dict[str, str]]:
+    """Build a ``Claim`` from submitted text fields, or say what's wrong.
+
+    Shared by the CSV path (one row) and the single-claim form. Errors are
+    keyed by field name, at most one per field. Checks formats only.
+    """
+    errors = {name: f"{name} is missing" for name in COLUMNS if name in REQUIRED and not raw[name].strip()}
+
+    def problem(name: str, message: str) -> None:
+        errors.setdefault(name, message)
 
     def text(name: str) -> str | None:
         return raw[name] if raw[name].strip() else None  # verbatim, never inspected
@@ -179,13 +187,13 @@ def _parse_row(raw: dict[str, str]) -> tuple[Claim | None, list[str]]:
                 return date.fromisoformat(value)
         except ValueError:
             pass
-        problems.append(f"{name} {value!r} is not a real YYYY-MM-DD date")
+        problem(name, f"{name} {value!r} is not a real YYYY-MM-DD date")
         return None
 
     def choice(name: str, allowed: tuple[str, ...]) -> str | None:
         value = raw[name].strip().lower()
         if value and value not in allowed:
-            problems.append(f"{name} {value!r} is not one of: {', '.join(allowed)}")
+            problem(name, f"{name} {value!r} is not one of: {', '.join(allowed)}")
         return value
 
     amount_text = raw["claimed_amount"].strip()
@@ -197,11 +205,11 @@ def _parse_row(raw: dict[str, str]) -> tuple[Claim | None, list[str]]:
         except InvalidOperation:
             pass
         if amount is None:
-            problems.append(f"claimed_amount {amount_text!r} is not a number")
+            problem("claimed_amount", f"claimed_amount {amount_text!r} is not a number")
 
     flag_text = raw["third_party_involved"].strip().lower()
     if flag_text and flag_text not in ("true", "false"):
-        problems.append(f"third_party_involved {raw['third_party_involved']!r} is not true or false")
+        problem("third_party_involved", f"third_party_involved {raw['third_party_involved']!r} is not true or false")
 
     values = {
         "claim_id": raw["claim_id"].strip().upper(),
@@ -220,9 +228,9 @@ def _parse_row(raw: dict[str, str]) -> tuple[Claim | None, list[str]]:
         "attachments": [a.strip() for a in raw["attachments"].split(";") if a.strip()],
         "submitted_via": choice("submitted_via", SUBMITTED_VIA),
     }
-    if problems:
-        return None, problems
-    return Claim(**values), []
+    if errors:
+        return None, errors
+    return Claim(**values), {}
 
 
 # --- storing and checking --------------------------------------------------
@@ -332,3 +340,30 @@ def ingest_csv(conn: sqlite3.Connection, text: str, run_checks: RunChecks) -> In
         run_checks(conn, run_id, new_ids)
         record_intake_flags(conn, run_id, skipped + batch.malformed, set(new_ids))
     return IntakeSummary(run_id, len(new_claims), len(skipped), len(batch.malformed))
+
+
+# --- single claim (form) -----------------------------------------------------
+
+
+class ClaimAlreadySubmitted(Exception):
+    """The form's claim_id is already on file. Nothing was stored."""
+
+    def __init__(self, claim_id: str) -> None:
+        super().__init__(f"{claim_id} has already been submitted.")
+        self.claim_id = claim_id
+
+
+def submit_claim(conn: sqlite3.Connection, claim: Claim, run_checks: RunChecks) -> str:
+    """Store and check one claim from the form, in one transaction. Returns the run_id.
+
+    Unlike CSV, a resubmitted claim_id is refused with nothing stored, since
+    the person submitting is there to see why.
+    """
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if db.claim_exists(conn, claim.claim_id):
+            raise ClaimAlreadySubmitted(claim.claim_id)
+        run_id = create_run(conn, "form", 1)
+        db.insert_claim(conn, claim)
+        run_checks(conn, run_id, [claim.claim_id])
+    return run_id
