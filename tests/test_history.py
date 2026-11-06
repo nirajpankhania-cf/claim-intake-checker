@@ -180,13 +180,14 @@ def test_demo_upload_shows_every_row_in_history_and_export(setup: Client, tmp_pa
 # --- review fixes -------------------------------------------------------------
 
 
-def test_latest_result_in_a_run_wins(seeded: Client) -> None:
+def test_second_result_in_a_run_is_rejected(seeded: Client) -> None:
+    # Since CIC-28 the schema allows one result per claim per run, so the
+    # first result stands and history is unchanged.
     client, conn = seeded
-    with conn:
+    before = client.get("/history").text
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"), conn:
         db.insert_result(conn, "RUN-A", "TEST-CLAIM-0002", "NEEDS_REVIEW", checked_at="2026-11-01T10:00:00+00:00")
-    assert "TEST-CLAIM-0002" in claim_ids(client.get("/history?outcome=NEEDS_REVIEW").text)
-    assert "TEST-CLAIM-0002" not in claim_ids(client.get("/history?outcome=READY_FOR_ADJUSTER").text)
-    assert "4 claims checked: 0 ready for adjuster, 4 need review." in client.get("/history").text
+    assert client.get("/history").text == before
 
 
 def test_dates_are_utc(setup: Client) -> None:  # noqa: F811

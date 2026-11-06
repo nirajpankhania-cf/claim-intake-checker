@@ -45,6 +45,7 @@
 | 2026-11-05 | A form submission is its own run (`source = form`, `claim_count = 1`) and redirects to `/review?run_id=…`, whose banner states the claim's outcome | Team, CIC-38 |
 | 2026-11-06 | Runner: "earlier" for R3 means stored earlier (SQLite insertion order), not lower claim_id, since form claim_ids are free-form. `existing_claims` is the earlier claims on the same policy | Team, CIC-28 |
 | 2026-11-06 | Runner raises `LookupError` if given a claim_id that isn't stored, so intake's transaction rolls back instead of recording a partial run | Team, CIC-28 |
+| 2026-11-06 | Re-runs are idempotent per run: one `check_results` row per (run, claim) and one `flags` row per (run, claim, rule), enforced by unique indexes; `run_checks` skips claims already checked in the run. Re-checking later means a new run | Team, CIC-28 (plan CIC-8) |
 
 ## Scenarios
 

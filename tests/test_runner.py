@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from app import db
 from app.main import app, get_db
+from app.models import Flag
 from app.runner import run_checks
 from scripts import generate_data
 from tests.rules.helpers import MID_TERM, make_claim, make_policy
@@ -185,3 +186,63 @@ def test_demo_csv_is_checked_by_the_real_runner(live: tuple[TestClient, Path], t
     assert {"R0", "R1", "R1b", "R2", "R3", "INTAKE"} <= rules
     # 6 each of S1, S2, S3, S5, S6, S7 are flagged by rules; 12 by intake.
     assert counts["NEEDS_REVIEW"] == 6 * 6 + 12
+
+
+# --- idempotent re-runs ---------------------------------------------------------
+
+
+def counts(conn: sqlite3.Connection) -> tuple[int, int]:
+    return (
+        conn.execute("SELECT COUNT(*) FROM check_results").fetchone()[0],
+        conn.execute("SELECT COUNT(*) FROM flags").fetchone()[0],
+    )
+
+
+def test_same_run_twice_writes_nothing_more(conn: sqlite3.Connection) -> None:
+    claim = make_claim(policy_number="TEST-POLICY-MISSING")
+    run_id = store(conn, claim)
+
+    with conn:
+        run_checks(conn, run_id, [claim.claim_id])
+    with conn:
+        run_checks(conn, run_id, [claim.claim_id])
+
+    assert counts(conn) == (1, 1)
+
+
+def test_repeated_claim_id_in_one_call_is_checked_once(conn: sqlite3.Connection) -> None:
+    claim = make_claim(policy_number="TEST-POLICY-MISSING")
+    run_id = store(conn, claim)
+
+    with conn:
+        run_checks(conn, run_id, [claim.claim_id, claim.claim_id])
+
+    assert counts(conn) == (1, 1)
+
+
+def test_new_run_rechecks_and_keeps_the_old_rows(conn: sqlite3.Connection) -> None:
+    claim = make_claim(policy_number="TEST-POLICY-MISSING")
+    first = store(conn, claim)
+    with conn:
+        run_checks(conn, first, [claim.claim_id])
+        second = db.insert_run(conn, "csv", 1)
+        run_checks(conn, second, [claim.claim_id])
+
+    assert counts(conn) == (2, 2)
+    assert results(conn, first) == results(conn, second) == {claim.claim_id: "NEEDS_REVIEW"}
+
+
+@pytest.mark.parametrize(
+    "insert",
+    [
+        lambda c, r: db.insert_result(c, r, "TEST-CLAIM-0001", "NEEDS_REVIEW"),
+        lambda c, r: db.insert_flag(c, r, "TEST-CLAIM-0001", Flag("R0", "Test", {})),
+    ],
+    ids=["check_results", "flags"],
+)
+def test_schema_rejects_a_second_row_for_the_same_run(conn: sqlite3.Connection, insert) -> None:  # type: ignore[no-untyped-def]
+    run_id = store(conn)
+    with conn:
+        insert(conn, run_id)
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        insert(conn, run_id)

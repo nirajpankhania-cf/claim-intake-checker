@@ -11,6 +11,12 @@ all inside intake's single transaction. So this module never commits, rolls
 back or creates a run, and only touches the claim_ids it is given. Resubmitted
 and malformed rows are intake's to record.
 
+Idempotent per run: a claim that already has a result in ``run_id`` is
+skipped, so calling ``run_checks`` again with the same arguments writes
+nothing. The schema backs this with unique indexes on ``check_results
+(run_id, claim_id)`` and ``flags (run_id, claim_id, rule_id)``. Re-checking a
+claim later means a new run, which adds new rows next to the old ones.
+
 Rules are pure; this is the only layer that reads the DB to build their
 inputs. History is append-only: rows are inserted, never updated or deleted.
 """
@@ -50,14 +56,25 @@ def _earlier_claims_on_policy(
     return [db.row_to_claim(r) for r in rows]
 
 
+def _already_checked(conn: sqlite3.Connection, run_id: str, claim_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM check_results WHERE run_id = ? AND claim_id = ?", (run_id, claim_id)
+    ).fetchone()
+    return row is not None
+
+
 def run_checks(conn: sqlite3.Connection, run_id: str, claim_ids: list[str]) -> None:
     """Check each claim against ALL_RULES and record its result and flags.
 
-    Expects the run and the claims to exist already. Raises ``LookupError``
-    (leaving the caller to roll back) if a claim_id is not stored.
+    Expects the run and the claims to exist already. Claims already checked in
+    this run, and repeats within ``claim_ids``, are skipped. Raises
+    ``LookupError`` (leaving the caller to roll back) if a claim_id is not
+    stored.
     """
     policies: dict[str, Policy | None] = {}
     for claim_id in claim_ids:
+        if _already_checked(conn, run_id, claim_id):
+            continue
         seq, claim = _load_claim(conn, claim_id)
         if claim.policy_number not in policies:
             policies[claim.policy_number] = db.get_policy(conn, claim.policy_number)
