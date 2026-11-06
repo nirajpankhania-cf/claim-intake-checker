@@ -43,6 +43,8 @@
 | 2026-11-05 | A form claim_id already in use (a stored claim, or any key in the check history such as a `ROW-` key) is refused with a link, and nothing is stored (S8 on the form). CSV still records S8 as an `INTAKE` flag and uses the same in-use check | Team, CIC-38 |
 | 2026-11-05 | `third_party_involved` is a required Yes/No choice on the form with no default, so an unanswered question is an error, not a silent No | Team, CIC-38 |
 | 2026-11-05 | A form submission is its own run (`source = form`, `claim_count = 1`) and redirects to `/review?run_id=…`, whose banner states the claim's outcome | Team, CIC-38 |
+| 2026-11-06 | Runner: "earlier" for R3 means stored earlier (SQLite insertion order), not lower claim_id, since form claim_ids are free-form. `existing_claims` is the earlier claims on the same policy | Team, CIC-28 |
+| 2026-11-06 | Runner raises `LookupError` if given a claim_id that isn't stored, so intake's transaction rolls back instead of recording a partial run | Team, CIC-28 |
 
 ## Scenarios
 
