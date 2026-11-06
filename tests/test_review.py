@@ -246,9 +246,10 @@ def test_banner_ignores_non_ascii_digits(seeded: tuple[TestClient, sqlite3.Conne
     assert response.status_code == 200 and "Upload checked" not in response.text
 
 
-def test_two_results_in_one_run_do_not_repeat_flags(seeded: tuple[TestClient, sqlite3.Connection]) -> None:
+def test_second_result_in_a_run_is_rejected(seeded: tuple[TestClient, sqlite3.Connection]) -> None:
+    # Since CIC-28 the schema allows one result per claim per run.
     client, conn = seeded
-    with conn:
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"), conn:
         db.insert_result(conn, "RUN-B", "TEST-CLAIM-0003", "NEEDS_REVIEW", checked_at=DAY2)
     assert client.get("/review?run_id=RUN-B").text.count("Policy not found") == 1
 

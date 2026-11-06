@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS check_results (
     checked_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_check_results_run ON check_results (run_id);
+-- One result per claim per run, so a repeated or retried check can't add rows.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_check_results_run_claim ON check_results (run_id, claim_id);
 
 CREATE TABLE IF NOT EXISTS flags (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +63,8 @@ CREATE TABLE IF NOT EXISTS flags (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_flags_run_claim ON flags (run_id, claim_id);
+-- One flag per rule per claim per run.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_flags_run_claim_rule ON flags (run_id, claim_id, rule_id);
 
 CREATE TRIGGER IF NOT EXISTS check_results_no_update
 BEFORE UPDATE ON check_results
