@@ -115,8 +115,11 @@ booleans are `true` / `false`, `attachments` is `;`-separated, and an empty
 cell means null. `data/claims.csv` has 512 rows: the 500 DB claims, 6 S8
 resubmissions (same `claim_id` and `report_date` as a DB claim, changed
 description) and 6 S9 malformed rows. Uploaded to a seeded DB it updates 6
-claims and re-checks the rest; uploaded to an empty DB the 6 S8 pairs
-collapse to one claim each (the last row wins) and 6 repeats are dropped.
+claims (a version is kept for each) and checks the other 494 for the first
+time, since `make seed` stores claims without checking them; a second upload
+of the same file shows all 500 as re-checked with no change. Uploaded to an
+empty DB the 6 S8 pairs collapse to one claim each (the last row wins) and 6
+repeats are dropped.
 
 ## CSV intake (`app/intake.py`)
 
