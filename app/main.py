@@ -87,7 +87,7 @@ async def intake_csv(
             text = str(pasted)
         else:
             raise intake.IntakeFileError("Choose a CSV file or paste CSV text.")
-        summary = intake.ingest_csv(conn, text, run_checks, recheck_stored=to_desk)
+        summary = intake.ingest_csv(conn, text, run_checks)
     except intake.IntakeFileError as exc:
         if to_desk:
             return _desk_home(request, conn, desk.plain_file_error(exc))
@@ -97,9 +97,11 @@ async def intake_csv(
     query = urlencode(
         {
             "run_id": summary.run_id,
-            "accepted": summary.accepted,
-            "skipped": summary.skipped,
+            "new": summary.new,
+            "updated": summary.updated,
+            "unchanged": summary.unchanged,
             "malformed": summary.malformed,
+            "repeats": summary.repeats,
         }
     )
     return RedirectResponse(f"/review?{query}", status_code=303)
@@ -220,7 +222,7 @@ def _form_results(conn: sqlite3.Connection, run_id: str | None) -> list[sqlite3.
 
 def _intake_summary(request: Request) -> dict[str, int] | None:
     """Counts passed on the intake redirect, if all are present and whole numbers."""
-    names = ("accepted", "skipped", "malformed")
+    names = ("new", "updated", "unchanged", "malformed", "repeats")
     values = [request.query_params.get(n, "") for n in names]
     if not all(v.isascii() and v.isdecimal() for v in values):
         return None
@@ -354,7 +356,7 @@ async def desk_sample(
     """Send the generated sample file through the normal CSV intake."""
     try:
         text = intake.decode_upload(desk.SAMPLE_CSV.read_bytes())
-        summary = intake.ingest_csv(conn, text, run_checks, recheck_stored=True)
+        summary = intake.ingest_csv(conn, text, run_checks)
     except FileNotFoundError:
         return _desk_home(request, conn, desk.SAMPLE_MISSING)
     except intake.IntakeFileError as exc:

@@ -9,8 +9,10 @@ Output is deterministic for a given seed. It writes:
 * the SQLite DB (via ``app.db`` helpers): every policy and every well-formed
   claim, each claim_id once;
 * ``data/policies.csv`` and ``data/claims.csv``: the same records, plus the
-  S8 re-submitted rows (same claim_id again) and the S9 malformed rows, which
-  cannot be stored as a ``Claim`` and only exist to exercise CSV intake.
+  S8 re-submitted rows (same claim_id again, with a changed description, so
+  intake overwrites and re-checks the stored claim and keeps the old version)
+  and the S9 malformed rows, which cannot be stored as a ``Claim`` and only
+  exist to exercise CSV intake.
 
 Deliberate scenario claims carry a tag at the start of ``description``, e.g.
 ``"SCENARIO S6: late report 41 days."``, and boundary cases carry
@@ -74,7 +76,7 @@ POLICY_COLUMNS = [f.name for f in fields(Policy)]
 class Dataset:
     policies: list[Policy]
     claims: list[Claim]  # well-formed, unique claim_ids; goes to the DB
-    csv_claim_rows: list[dict[str, str]]  # claims + S8 resubmissions + S9 rows
+    csv_claim_rows: list[dict[str, str]]  # claims + S8 resubmissions (changed) + S9 rows
 
 
 def _add_year(d: date) -> date:
@@ -275,7 +277,8 @@ class _Generator:
             dup["_duplicate_of"] = original
             self.add(dup, "SCENARIO S7: duplicate of {original}")
 
-        # S8 same claim_id submitted again (originals here, resubmissions in CSV).
+        # S8 same claim_id submitted again (originals here; the CSV also has a
+        # resubmission with the same report_date and a changed description).
         s8_originals = [self.clean(tag="SCENARIO S8: original submission") for _ in range(PER_SCENARIO)]
 
         # S10 claimed amount above policy limit.

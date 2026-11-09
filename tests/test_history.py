@@ -170,11 +170,12 @@ def test_demo_upload_shows_every_row_in_history_and_export(setup: Client, tmp_pa
 
     needs = conn.execute("SELECT COUNT(*) FROM check_results WHERE outcome = 'NEEDS_REVIEW'").fetchone()[0]
     page = client.get("/history").text
-    assert f"512 claims checked: {512 - needs} ready for adjuster, {needs} need review." in page
+    # 500 claims (the 6 S8 repeats in the file collapse onto their claim) + 6 malformed rows.
+    assert f"506 claims checked: {506 - needs} ready for adjuster, {needs} need review." in page
     rows = csv_rows(client.get("/history.csv").text)
-    assert len(rows) == 512
+    assert len(rows) == 506
     assert sum(row["outcome"] == "NEEDS_REVIEW" for row in rows) == needs
-    assert sum(row["rule_ids"] == "INTAKE" for row in rows) == 12
+    assert sum(row["rule_ids"] == "INTAKE" for row in rows) == 6
 
 
 # --- review fixes -------------------------------------------------------------

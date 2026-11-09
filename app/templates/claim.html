@@ -39,7 +39,7 @@
   {% for item in history %}
     <section>
       {% if item.claim_id != claim_id %}
-        <p>Resubmission of this claim, recorded as <a href="/claims/{{ item.claim_id | urlencode }}">{{ item.claim_id }}</a>.</p>
+        <p>Earlier intake row for this claim ID, recorded as <a href="/claims/{{ item.claim_id | urlencode }}">{{ item.claim_id }}</a>.</p>
       {% endif %}
       <h3>Run <code>{{ item.run_id }}</code> ({{ item.source }}, {{ item.run_started_at.isoformat() }}): {{ "Needs review" if item.outcome == "NEEDS_REVIEW" else "Ready for adjuster" }}</h3>
       {% if not item.flags %}<p>No flags.</p>{% endif %}

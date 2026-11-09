@@ -248,8 +248,8 @@ def list_runs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def claim_history(conn: sqlite3.Connection, claim_id: str) -> list[QueueItem]:
     """Every result recorded for one claim, flagged or not, newest run first.
 
-    Includes intake rows that resubmitted this claim_id; intake keys those
-    ``ROW-<run_id>-<line_no>`` (see app/intake.py).
+    Includes malformed intake rows that carried this claim_id; intake keys
+    those ``ROW-<run_id>-<line_no>`` when the id is taken (see app/intake.py).
     """
     where = (
         "r.claim_id = ? OR r.claim_id IN (SELECT claim_id FROM flags"

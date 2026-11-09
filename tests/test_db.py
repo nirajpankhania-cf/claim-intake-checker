@@ -118,7 +118,7 @@ def test_invalid_run_source_rejected(conn: sqlite3.Connection) -> None:
         db.insert_run(conn, "email", 1)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("table", ["flags", "check_results"])
+@pytest.mark.parametrize("table", ["flags", "check_results", "claim_versions"])
 @pytest.mark.parametrize(
     "statement",
     ["UPDATE {table} SET claim_id = 'TEST-CLAIM-X'", "DELETE FROM {table}"],
@@ -130,6 +130,7 @@ def test_history_tables_are_append_only(
         run_id = db.insert_run(conn, "form", 1)
         db.insert_result(conn, run_id, "TEST-CLAIM-0001", "NEEDS_REVIEW")
         db.insert_flag(conn, run_id, "TEST-CLAIM-0001", Flag("R0", "Test", {}))
+        db.insert_claim_version(conn, run_id, make_claim())
 
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         conn.execute(statement.format(table=table))
@@ -145,4 +146,57 @@ def test_seed_creates_db_file(tmp_path: Path) -> None:
         for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     connection.close()
-    assert {"policies", "claims", "check_runs", "check_results", "flags"} <= tables
+    assert {"policies", "claims", "check_runs", "check_results", "flags", "claim_versions"} <= tables
+
+
+# --- current claim and its versions ------------------------------------------
+
+
+def test_update_claim_keeps_rowid(conn: sqlite3.Connection) -> None:
+    with conn:
+        db.insert_claim(conn, make_claim(claim_id="TEST-CLAIM-0001"))
+        db.insert_claim(conn, make_claim(claim_id="TEST-CLAIM-0002"))
+    before = conn.execute("SELECT rowid FROM claims WHERE claim_id = 'TEST-CLAIM-0001'").fetchone()[0]
+    changed = make_claim(claim_id="TEST-CLAIM-0001", vehicle_reg="ZZ99 ZZZ", attachments=["new.jpg"])
+    with conn:
+        db.update_claim(conn, changed)
+
+    after = conn.execute("SELECT rowid FROM claims WHERE claim_id = 'TEST-CLAIM-0001'").fetchone()[0]
+    assert after == before
+    assert db.get_claim(conn, "TEST-CLAIM-0001") == changed
+    assert db.get_claim(conn, "TEST-CLAIM-0002") == make_claim(claim_id="TEST-CLAIM-0002")
+    assert conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0] == 2
+
+
+def test_update_claim_unknown_id_raises(conn: sqlite3.Connection) -> None:
+    with pytest.raises(LookupError, match="TEST-CLAIM-NOPE"):
+        db.update_claim(conn, make_claim(claim_id="TEST-CLAIM-NOPE"))
+
+
+def test_claim_version_round_trip_and_order(conn: sqlite3.Connection) -> None:
+    first = make_claim(description="first", claimed_amount=Decimal("0.10"), attachments=["a.jpg"])
+    second = make_claim(description="second")
+    with conn:
+        db.insert_claim(conn, first)
+        run_a = db.insert_run(conn, "csv", 1)
+        db.insert_claim_version(conn, run_a, first, replaced_at="2026-11-09T10:00:00+00:00")
+        db.update_claim(conn, second)
+        run_b = db.insert_run(conn, "form", 1)
+        db.insert_claim_version(conn, run_b, second)
+        db.update_claim(conn, make_claim(description="third"))
+
+    versions = db.get_claim_versions(conn, first.claim_id)
+    assert [v.claim for v in versions] == [first, second]
+    assert [v.run_id for v in versions] == [run_a, run_b]
+    assert versions[0].replaced_at.isoformat() == "2026-11-09T10:00:00+00:00"
+    assert isinstance(versions[0].claim.claimed_amount, Decimal)
+    assert db.get_claim_versions(conn, "TEST-CLAIM-NOPE") == []
+    assert db.get_claim(conn, first.claim_id).description == "third"
+
+
+def test_one_version_per_claim_per_run(conn: sqlite3.Connection) -> None:
+    with conn:
+        run_id = db.insert_run(conn, "csv", 1)
+        db.insert_claim_version(conn, run_id, make_claim())
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        db.insert_claim_version(conn, run_id, make_claim())

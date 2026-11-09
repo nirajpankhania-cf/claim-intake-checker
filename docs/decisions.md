@@ -12,7 +12,7 @@
 | 2026-11-04 | Default `REPORTING_WINDOW_DAYS = 30` — pending Karn | Team default |
 | 2026-11-04 | Default `EXPIRY_DAY_COVERED = True` — pending Karn | Team default |
 | 2026-11-04 | Duplicate = different claim_id, same policy_number + loss_date; later claim gets the flag, reason names the earlier one | Team |
-| 2026-11-04 | Re-submitted claim_id is skipped and logged, not re-checked | Team |
+| 2026-11-04 | Re-submitted claim_id is skipped and logged, not re-checked. **Superseded 2026-11-09** (overwrite and re-check) | Team |
 | 2026-11-04 | Re-running checks creates a new run; nothing is updated or deleted | Team |
 | 2026-11-05 | R1 and R1b return nothing when the policy is missing; R0 is the only flag for an unknown policy | Niraj, PR #3 |
 | 2026-11-05 | A cover type absent from config covers nothing (flags, doesn't crash) | Niraj, PR #3 |
@@ -40,12 +40,18 @@
 | 2026-11-05 | History CSV export has the page's rows and filters: one row per claim per run, rule ids joined with `;`, reasons joined with ` \| `. UTF-8 with a BOM so Excel reads it correctly. If a run recorded a claim twice, the latest result wins | Team, CIC-31 |
 | 2026-11-05 | CSV export cells whose first non-space character is `=`, `+`, `-` or `@`, or that start with a tab, carriage return or newline, get a leading `'` so spreadsheets don't run submitted text as a formula | Team, CIC-31 |
 | 2026-11-05 | Single-claim form uses the same field checks as a CSV row (`intake.parse_claim_fields`). Invalid input re-shows the form with an error beside each field and stores nothing; it is not recorded as S9 | Team, CIC-38 |
-| 2026-11-05 | A form claim_id already in use (a stored claim, or any key in the check history such as a `ROW-` key) is refused with a link, and nothing is stored (S8 on the form). CSV still records S8 as an `INTAKE` flag and uses the same in-use check | Team, CIC-38 |
+| 2026-11-05 | A form claim_id already in use (a stored claim, or any key in the check history such as a `ROW-` key) is refused with a link, and nothing is stored (S8 on the form). CSV still records S8 as an `INTAKE` flag and uses the same in-use check. **Superseded 2026-11-09** (form confirms, then replaces; history-only ids don't block) | Team, CIC-38 |
 | 2026-11-05 | `third_party_involved` is a required Yes/No choice on the form with no default, so an unanswered question is an error, not a silent No | Team, CIC-38 |
 | 2026-11-05 | A form submission is its own run (`source = form`, `claim_count = 1`) and redirects to `/review?run_id=…`, whose banner states the claim's outcome | Team, CIC-38 |
 | 2026-11-06 | Runner: "earlier" for R3 means stored earlier (SQLite insertion order), not lower claim_id, since form claim_ids are free-form. `existing_claims` is the earlier claims on the same policy | Team, CIC-28 |
 | 2026-11-06 | Runner raises `LookupError` if given a claim_id that isn't stored, so intake's transaction rolls back instead of recording a partial run | Team, CIC-28 |
 | 2026-11-06 | Re-runs are idempotent per run: one `check_results` row per (run, claim) and one `flags` row per (run, claim, rule), enforced by unique indexes; `run_checks` skips claims already checked in the run. Re-checking later means a new run | Team, CIC-28 (plan CIC-8) |
+| 2026-11-09 | **Assumption, to confirm with Karn after the demo:** a claim submitted again with an existing `claim_id` overwrites the stored claim with the new submission and is checked again in a new run, on CSV, form and desk alike. The `INTAKE` "resubmission" flag no longer exists; earlier results are kept | Team, pending Karn |
+| 2026-11-09 | Version trail: when a resubmission changes at least one field, the superseded claim is saved to `claim_versions` (append-only, enforced by triggers) before `claims` is updated. An identical resubmission writes no version, only a new result. `claims` always holds the current version; the update is a plain `UPDATE`, so the claim keeps its submission order for R3 | Team |
+| 2026-11-09 | Same `claim_id` more than once in one CSV: the row with the most recent `report_date` wins; a tie goes to the last row. The other rows are dropped, not stored, and only counted (`repeats`) | Niraj |
+| 2026-11-09 | Across uploads the new submission always wins, whatever its `report_date`. **Assumption**, to confirm with Karn | Team, pending Karn |
+| 2026-11-09 | A `claim_id` that has check results but no stored claim (a malformed row recorded under its id, or a `ROW-` key) does not block a valid submission of that id; it is earlier history for the id. `db.claim_id_in_use` removed | Team |
+| 2026-11-09 | Deleting a claim is deferred to a separate issue. A hard delete conflicts with append-only history; if wanted, the likely shape is a "withdrawn" marker that hides the claim and keeps every result | Niraj |
 
 ## Scenarios
 
@@ -58,7 +64,7 @@
 | S5 | Loss type not covered by cover type | R1b | Needs review |
 | S6 | Reported more than 30 days after loss | R2 | Needs review |
 | S7 | Different claim ID, same policy + loss date | R3 | Needs review |
-| S8 | Same claim ID submitted again | intake | Skipped, not re-checked; Needs review (`INTAKE` flag) |
+| S8 | Same claim ID submitted again | intake + all rules | Stored claim overwritten (old version kept when anything changed) and checked again; outcome from the rules. Assumption pending Karn |
 | S9 | Required field missing or date unparseable | intake | Needs review (`INTAKE` flag) |
 | S10 | Claimed amount above policy limit | R4 | Stretch — pending Karn |
 | S11 | None of the above | — | Ready for adjuster |

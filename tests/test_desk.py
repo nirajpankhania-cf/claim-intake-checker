@@ -142,19 +142,22 @@ def test_every_upload_runs_the_checks_and_keeps_earlier_results(client: Client) 
     upload(test_client, text)
     second = upload(test_client, text)
     assert fake.calls[1][1] == ["TEST-CLAIM-0001", "TEST-CLAIM-0002"]
-    assert tiles(second.text)["Ready for adjuster"] == 2 and tiles(second.text)["Resubmitted"] == 1
+    assert tiles(second.text)["Ready for adjuster"] == 2
     assert "2 of these claims had been checked before" in second.text
     assert count(path, "claims") == 2 and count(path, "check_runs") == 2
-    assert count(path, "check_results") == 8
+    assert count(path, "check_results") == 6  # 2 claims + 1 malformed row, twice; the in-file repeat is dropped
 
 
-def test_changed_row_is_not_checked_and_said_plainly(client: Client) -> None:  # noqa: F811
-    test_client, fake, _ = client
+def test_changed_row_is_updated_and_rechecked(client: Client) -> None:  # noqa: F811
+    test_client, fake, path = client
     upload(test_client, to_csv([row()]))
     response = upload(test_client, to_csv([row(vehicle_reg="ZZ99 ZZZ"), row(claim_id="", loss_date="bad")]))
-    assert "Nothing new was checked." in response.text
-    assert 'href="?queue=resubmitted"' in response.text and 'href="?queue=malformed"' in response.text
-    assert fake.calls[1][1] == []
+    assert response.status_code == 200 and 'href="?queue=malformed"' in response.text
+    assert fake.calls[1][1] == ["TEST-CLAIM-0001"]
+    assert count(path, "claim_versions") == 1
+    conn = db.get_connection(path)
+    assert db.get_claim(conn, "TEST-CLAIM-0001").vehicle_reg == "ZZ99 ZZZ"
+    conn.close()
 
 
 def test_results_are_split_by_route_and_show_each_check(client: Client) -> None:  # noqa: F811
@@ -236,13 +239,14 @@ def test_sample_counts_match_an_independent_recount(client: Client, tmp_path: Pa
     batch = intake.parse_csv(text)
     policies = {policy.policy_number: policy for policy in data.policies}
 
+    # Same claim_id more than once: the most recent report date wins, ties go to the last row.
     seen: dict[str, Claim] = {}
+    for _, claim, _raw in batch.accepted:
+        if claim.claim_id not in seen or claim.report_date >= seen[claim.claim_id].report_date:
+            seen[claim.claim_id] = claim
     earlier: list[Claim] = []
     gates = other = ready = 0
-    for _, claim, _raw in batch.accepted:
-        if claim.claim_id in seen:
-            continue
-        seen[claim.claim_id] = claim
+    for claim in seen.values():
         policy = policies.get(claim.policy_number)
         loss = claim.loss_date
         gate = policy is None or (
@@ -263,7 +267,7 @@ def test_sample_counts_match_an_independent_recount(client: Client, tmp_path: Pa
     shown = tiles(upload(test_client, text).text)
     assert shown["Policy gates"] == gates and shown["Other checks"] == other
     assert shown["Ready for adjuster"] == ready
-    assert shown["Resubmitted"] == len(batch.accepted) - len(seen) and shown["Malformed data"] == len(batch.malformed)
+    assert shown["Received"] == len(seen) + len(batch.malformed) and shown["Malformed data"] == len(batch.malformed)
 
 
 def test_form_error_reshows_desk_form_and_stores_nothing(client: Client) -> None:  # noqa: F811
@@ -285,16 +289,15 @@ def test_form_success_goes_to_the_result_page(client: Client) -> None:  # noqa: 
 def test_result_page_shows_reasons_and_counts(result, client: Client) -> None:  # type: ignore[no-untyped-def]
     assert result.status_code == 200
     assert tiles(result.text) == {
-        "Received": 4,
+        "Received": 3,
         "Ready for adjuster": 1,
-        "Needs review": 3,
+        "Needs review": 2,
         "Policy gates": 0,
         "Other checks": 1,
-        "Resubmitted": 1,
+        "Resubmitted": 0,
         "Malformed data": 1,
     }
     assert REASON in result.text and "Test Policyholder" in result.text
-    assert desk.ALREADY_SUBMITTED in tab(client[0], result, "resubmitted")
     assert "Loss date &#39;15/06/2026&#39; is not a real" in tab(client[0], result, "malformed")
     assert "TEST-CLAIM-0002" in tab(client[0], result, "ready")
 
@@ -322,7 +325,6 @@ def test_claim_page_shows_labels_and_reasons_not_snapshot(result, client: Client
     assert response.status_code == 200
     assert REASON in response.text and "Needs review" in response.text
     assert "Policyholder name" in response.text and "Claimed amount (as shown, not verified)" in response.text
-    assert "submitted again 1 time." in response.text
     assert re.search(r"<td[^>]*>Reported on time</td>\s*<td[^>]*>Flagged</td>\s*<td>" + REASON, response.text)
     assert re.search(r"<td[^>]*>Policy exists</td>\s*<td[^>]*>Passed</td>", response.text)
     assert "Audit trail" in response.text and "File upload" in response.text and " UTC" in response.text
@@ -349,8 +351,8 @@ def test_unstored_row_has_no_claim_page(result, client: Client) -> None:  # type
     "query, expected",
     [
         ("outcome=READY_FOR_ADJUSTER", 1),
-        ("outcome=NEEDS_REVIEW", 3),
-        ("", 4),
+        ("outcome=NEEDS_REVIEW", 2),
+        ("", 3),
         ("date_to=2000-01-01", 0),
     ],
 )
@@ -411,13 +413,13 @@ def test_hide_repeats_shows_each_claim_once_and_deletes_nothing(result, client: 
     test_client, _, path = client
     upload(test_client, mixed_csv())
     stored = count(path, "check_results")
-    assert test_client.get("/desk/claims").text.count("<tr>") - 1 == stored == 8
+    assert test_client.get("/desk/claims").text.count("<tr>") - 1 == stored == 6
     text = test_client.get("/desk/claims?latest=1").text
     assert text.count("<tr>") - 1 == 3  # two claims and the one unreadable row
     assert "Each claim appears once" in text and count(path, "check_results") == stored
     assert 'href="/history.csv?latest=1"' in text and 'name="latest" value="1"' in text
     export = test_client.get("/history.csv?latest=1").text
-    assert len(export.strip().splitlines()) == 4 and len(test_client.get("/history.csv").text.strip().splitlines()) == 9
+    assert len(export.strip().splitlines()) == 4 and len(test_client.get("/history.csv").text.strip().splitlines()) == 7
 
 
 def test_hide_repeats_lists_a_claim_under_its_current_outcome(client: Client) -> None:  # noqa: F811

@@ -178,9 +178,9 @@ def test_every_field_has_a_label() -> None:
     assert tuple(FIELD_LABELS) == intake.COLUMNS
 
 
-def test_ids_already_in_check_history_cannot_be_reused(client: Client) -> None:  # noqa: F811
-    """A ROW- key normally has a lowercase run id, so an uppercased form id can't
-    match it; this covers the rare all-digit run id, which can."""
+def test_ids_known_only_from_check_history_can_be_used(client: Client) -> None:  # noqa: F811
+    """An id with results but no stored claim (a malformed row recorded under
+    it, or a ROW- key) is earlier history for that id, not a block."""
     test_client, fake, path = client
     conn = db.get_connection(path)
     db.init_db(conn)
@@ -188,9 +188,9 @@ def test_ids_already_in_check_history_cannot_be_reused(client: Client) -> None: 
         db.insert_run(conn, "csv", 1, run_id="123")
         db.insert_result(conn, "123", "ROW-123-2", "NEEDS_REVIEW")
     conn.close()
-    response = test_client.post("/intake/claim", data=form_data(claim_id="row-123-2"))
-    assert response.status_code == 400 and "ROW-123-2 has already been submitted" in response.text
-    assert count(path, "claims") == 0
+    response = test_client.post("/intake/claim", data=form_data(claim_id="row-123-2"), follow_redirects=False)
+    assert response.status_code == 303
+    assert count(path, "claims") == 1 and fake.calls[0][1] == ["ROW-123-2"]
 
 
 def test_file_part_under_a_field_name_counts_as_missing(client: Client) -> None:  # noqa: F811
