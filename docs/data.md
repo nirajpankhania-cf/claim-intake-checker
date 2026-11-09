@@ -77,6 +77,8 @@ with conn:
 `make seed` (or `python -m scripts.generate_data [--db PATH] [--out DIR] [--seed N]`)
 writes the DB and `data/policies.csv` and `data/claims.csv`. Output is the
 same on every run. It is the only allowed source of policy and claim data.
+`make reset` deletes the DB file first (`scripts/reset_db.py`, development
+only) and seeds again.
 
 - **Policies (200):** UK-style regs (`AB12 CDE`), about 60/25/15%
   comprehensive / tpft / tpo, 12-month terms starting between 2025-01-01 and
@@ -140,9 +142,15 @@ checks it and redirects (303) to
 
 `GET /intake/claim` shows a form with one field per `Claim` field.
 `POST /intake/claim` checks it with the same rules as a CSV row. Errors
-re-show the form and store nothing; a claim_id already on file is refused.
-A valid claim is stored and checked as its own `form` run, then the browser
-is sent to `/review?run_id=…`, which states the claim's outcome.
+re-show the form (400) and store nothing. A valid claim is stored and checked
+as its own `form` run, then the browser is sent to `/review?run_id=…`, which
+states the claim's outcome.
+
+A claim_id already on file re-shows the form (200) as a confirmation: which
+fields differ from the stored claim (labels only), and a "Replace and
+re-check" button that sends the claim_id back in a hidden `replace` field.
+Only a submission whose `replace` matches its claim_id overwrites the stored
+claim (through `intake.store_claim`, so a changed claim is versioned first).
 
 ## Review pages (`app/review.py`)
 

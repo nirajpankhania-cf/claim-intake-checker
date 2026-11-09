@@ -16,7 +16,7 @@ import pytest
 
 from app import db
 from app.models import Flag
-from scripts import seed
+from scripts import reset_db, seed
 from tests.rules.helpers import POLICY_NUMBER, make_claim, make_policy
 
 
@@ -200,3 +200,35 @@ def test_one_version_per_claim_per_run(conn: sqlite3.Connection) -> None:
         db.insert_claim_version(conn, run_id, make_claim())
     with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
         db.insert_claim_version(conn, run_id, make_claim())
+
+
+# --- developer reset ---------------------------------------------------------
+
+
+def test_reset_db_removes_file_and_sidecars(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = tmp_path / "x.db"
+    for name in ("x.db", "x.db-wal", "x.db-shm"):
+        (tmp_path / name).write_bytes(b"")
+    (tmp_path / "keep.csv").write_text("a,b\n")
+
+    assert reset_db.main([str(path)]) == path
+    assert not any((tmp_path / name).exists() for name in ("x.db", "x.db-wal", "x.db-shm"))
+    assert (tmp_path / "keep.csv").exists()
+    assert "Removed" in capsys.readouterr().out
+    reset_db.main([str(path)])  # already gone: fine
+    assert "nothing to remove" in capsys.readouterr().out
+
+
+def test_reset_db_refuses_non_db_path(tmp_path: Path) -> None:
+    other = tmp_path / "notes.txt"
+    other.write_text("keep me")
+    with pytest.raises(SystemExit, match="does not look like a database file"):
+        reset_db.main([str(other)])
+    assert other.read_text() == "keep me"
+
+
+def test_reset_db_defaults_to_configured_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "configured.db"
+    path.write_bytes(b"")
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", path)
+    assert reset_db.main([]) == path and not path.exists()

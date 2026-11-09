@@ -278,6 +278,22 @@ def test_form_error_reshows_desk_form_and_stores_nothing(client: Client) -> None
     assert count(path, "claims") == 0 and fake.calls == []
 
 
+def test_desk_form_confirm_step(client: Client) -> None:  # noqa: F811
+    test_client, fake, path = client
+    test_client.post("/intake/claim", data={**row(), "next": "desk"})
+    response = test_client.post("/intake/claim", data={**row(vehicle_reg="ZZ99 ZZZ"), "next": "desk"})
+    assert response.status_code == 200 and "Claim TEST-CLAIM-0001 is already on file." in response.text
+    assert 'href="/desk/claims/TEST-CLAIM-0001"' in response.text and 'name="next" value="desk"' in response.text
+    assert "These fields differ from the stored claim: Vehicle registration." in response.text
+    assert 'name="replace" value="TEST-CLAIM-0001"' in response.text and "Replace and re-check" in response.text
+    assert count(path, "check_runs") == 1 and count(path, "claim_versions") == 0
+    confirmed = test_client.post(
+        "/intake/claim", data={**row(vehicle_reg="ZZ99 ZZZ"), "next": "desk", "replace": "TEST-CLAIM-0001"}, follow_redirects=False
+    )
+    assert confirmed.status_code == 303 and confirmed.headers["location"].startswith("/desk/runs/")
+    assert count(path, "check_runs") == 2 and count(path, "claim_versions") == 1 and len(fake.calls) == 2
+
+
 def test_form_success_goes_to_the_result_page(client: Client) -> None:  # noqa: F811
     response = client[0].post("/intake/claim", data={**row(), "next": "desk"}, follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"].startswith("/desk/runs/")

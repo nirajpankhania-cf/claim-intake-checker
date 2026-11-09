@@ -259,7 +259,12 @@ async def submit_claim(
     conn: sqlite3.Connection = Depends(get_db),
     run_checks: intake.RunChecks = Depends(get_run_checks),
 ) -> Response:
-    """Primary intake path: one claim. Errors re-show the form; nothing is stored."""
+    """Primary intake path: one claim. Errors re-show the form; nothing is stored.
+
+    A claim_id already on file re-shows the form as a confirmation: which
+    fields differ, and a "Replace and re-check" button that sends the same
+    claim_id back in ``replace``. Only then is the stored claim overwritten.
+    """
     form = await request.form()
     # A file part sent under a field name is treated as a missing value.
     raw = {name: value if isinstance(value := form.get(name), str) else "" for name in intake.COLUMNS}
@@ -268,10 +273,14 @@ async def submit_claim(
     claim, errors = intake.parse_claim_fields(raw)
     if claim is None:
         return show_form(request, raw, errors)
+    # The token must name the claim being replaced, so editing the id on the
+    # confirmation page can't silently overwrite a different claim.
+    replace = form.get("replace") == claim.claim_id
     try:
-        run_id = intake.submit_claim(conn, claim, run_checks)
+        run_id = intake.submit_claim(conn, claim, run_checks, replace=replace)
     except intake.ClaimAlreadySubmitted as exc:
-        return show_form(request, raw, {"claim_id": str(exc)}, existing_claim_id=exc.claim_id)
+        changed = [FIELD_LABELS[name] for name in intake.changed_fields(exc.existing, claim)]
+        return show_form(request, raw, existing_claim_id=exc.claim_id, changed=changed)
     if to_desk:
         return _desk_result(run_id)
     return RedirectResponse(f"/review?{urlencode({'run_id': run_id})}", status_code=303)
@@ -283,7 +292,13 @@ def _claim_form(
     errors: dict[str, str] | None = None,
     existing_claim_id: str | None = None,
     template: str = "intake_claim.html",
+    changed: list[str] | None = None,
 ) -> Response:
+    """The form, with field errors (400) or as a replace confirmation (200).
+
+    ``changed`` is the labels of the fields that differ from the stored claim;
+    labels only, so submitted text is never repeated outside its own field.
+    """
     return templates.TemplateResponse(
         request,
         template,
@@ -295,6 +310,7 @@ def _claim_form(
             "loss_types": LOSS_TYPES,
             "submitted_via": SUBMITTED_VIA,
             "existing_claim_id": existing_claim_id,
+            "changed": changed or [],
         },
         status_code=400 if errors else 200,
     )
@@ -330,9 +346,10 @@ def _desk_claim_form(
     values: dict[str, str],
     errors: dict[str, str] | None = None,
     existing_claim_id: str | None = None,
+    changed: list[str] | None = None,
 ) -> Response:
     plain = {name: desk.plain_problem(text, FIELD_LABELS) for name, text in (errors or {}).items()}
-    return _claim_form(request, values, plain, existing_claim_id, template="desk/claim_form.html")
+    return _claim_form(request, values, plain, existing_claim_id, template="desk/claim_form.html", changed=changed)
 
 
 @app.get("/desk", response_class=HTMLResponse)

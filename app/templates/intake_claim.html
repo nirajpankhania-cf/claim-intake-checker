@@ -12,7 +12,10 @@
     <p role="alert"><strong>Nothing was stored.</strong> Fix the {{ "field" if errors | length == 1 else "fields" }} marked below.</p>
   {% endif %}
   {% if existing_claim_id %}
-    <p>See the <a href="/claims/{{ existing_claim_id | urlencode }}">existing claim {{ existing_claim_id }}</a>.</p>
+    <p role="status"><strong>Claim {{ existing_claim_id }} is already on file.</strong>
+      See the <a href="/claims/{{ existing_claim_id | urlencode }}">existing claim {{ existing_claim_id }}</a>.
+      {% if changed %}These fields differ from the stored claim: {{ changed | join(", ") }}.{% else %}No fields differ from the stored claim.{% endif %}
+      Submitting again will replace the stored claim and check it again; the earlier version and its results are kept.</p>
   {% endif %}
 
   {% macro field(name, type="text") -%}
@@ -41,6 +44,7 @@
   {%- endmacro %}
 
   <form method="post" action="/intake/claim">
+    {% if existing_claim_id %}<input type="hidden" name="replace" value="{{ existing_claim_id }}">{% endif %}
     {{ field("claim_id") }}
     {{ field("policy_number") }}
     {{ field("policyholder_name") }}
@@ -63,7 +67,7 @@
     {{ field("police_reference") }}
     {{ field("attachments") }}
     {{ choice("submitted_via", submitted_via) }}
-    <button type="submit">Check claim</button>
+    <button type="submit">{{ "Replace and re-check" if existing_claim_id else "Check claim" }}</button>
   </form>
 </body>
 </html>

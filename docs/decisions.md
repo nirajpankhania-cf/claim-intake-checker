@@ -51,6 +51,8 @@
 | 2026-11-09 | Same `claim_id` more than once in one CSV: the row with the most recent `report_date` wins; a tie goes to the last row. The other rows are dropped, not stored, and only counted (`repeats`) | Niraj |
 | 2026-11-09 | Across uploads the new submission always wins, whatever its `report_date`. **Assumption**, to confirm with Karn | Team, pending Karn |
 | 2026-11-09 | A `claim_id` that has check results but no stored claim (a malformed row recorded under its id, or a `ROW-` key) does not block a valid submission of that id; it is earlier history for the id. `db.claim_id_in_use` removed | Team |
+| 2026-11-09 | Form: a claim_id already on file re-shows the form as a confirmation (200) naming the fields that differ (labels only, never values) with a "Replace and re-check" button. The hidden `replace` token carries the claim_id, and the overwrite only happens when it matches the id submitted, so editing the id on that page can't replace a different claim | Niraj |
+| 2026-11-09 | `make reset` (`scripts/reset_db.py`) deletes the DB file and seeds again, for trying behaviour from a clean state. Development only; the web app has no delete path | Niraj |
 | 2026-11-09 | Deleting a claim is deferred to a separate issue. A hard delete conflicts with append-only history; if wanted, the likely shape is a "withdrawn" marker that hides the claim and keeps every result | Niraj |
 
 ## Scenarios
