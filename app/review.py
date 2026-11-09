@@ -157,7 +157,7 @@ def _results_with_flags(
         " JOIN check_runs ru ON ru.run_id = r.run_id"
         f" {'LEFT JOIN' if unflagged else 'JOIN'} flags f ON f.run_id = r.run_id AND f.claim_id = r.claim_id"
         f" WHERE {where}"
-        " ORDER BY ru.started_at DESC, r.run_id, r.id, f.id",
+        " ORDER BY ru.started_at DESC, ru.rowid DESC, r.id, f.id",
         params,
     ).fetchall()
     claims = get_claims(conn, {row["claim_id"] for row in rows})

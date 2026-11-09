@@ -1,0 +1,46 @@
+{% extends "desk/base.html" %}
+{% block title %}New check{% endblock %}
+{% block content %}
+  <header class="head"><h1>New check</h1></header>
+  {% if error %}<p class="alert" role="alert"><strong>Nothing was stored.</strong> {{ error }}</p>{% endif %}
+
+  <div class="intake">
+    <form method="post" action="/intake/csv" enctype="multipart/form-data" class="intake-main">
+      <input type="hidden" name="next" value="desk">
+      <label for="file">Upload a claims file (CSV)</label>
+      <div class="inline">
+        <input type="file" id="file" name="file" accept=".csv,text/csv" required>
+        <button type="submit">Check this file</button>
+      </div>
+    </form>
+    <div class="intake-alt">
+      <a class="button ghost" href="/desk/claim">Enter one claim</a>
+      <form method="post" action="/desk/sample"><button type="submit" class="ghost">Load the sample</button></form>
+    </div>
+  </div>
+
+  <section>
+    <h2>Recent checks</h2>
+    {% if runs %}
+      <div class="scroll">
+        <table class="grid">
+          <thead><tr><th scope="col">Date and time</th><th scope="col">Source</th><th scope="col" class="num">Received</th><th scope="col" class="num">Ready for adjuster</th><th scope="col" class="num">Needs review</th><th scope="col"></th></tr></thead>
+          <tbody>
+            {% for run in runs %}
+              <tr>
+                <td class="id">{{ run.when }}</td>
+                <td>{{ run.source }}</td>
+                <td class="num">{{ run.received }}</td>
+                <td class="num">{{ run.ready }}</td>
+                <td class="num">{{ run.review }}</td>
+                <td class="right"><a href="/desk/runs/{{ run.run_id | urlencode }}">Open queue</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty">No checks yet. Upload a file or load the sample to start.</p>
+    {% endif %}
+  </section>
+{% endblock %}

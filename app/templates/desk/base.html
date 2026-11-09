@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Review desk{% endblock %} · Claim Intake Check</title>
+  <link rel="stylesheet" href="/static/desk.css?v={{ stylesheet_version() }}">
+</head>
+<body>
+  {% set path = request.url.path %}
+  {% set from_queue = path.startswith("/desk/runs/") or (path.startswith("/desk/claims/") and request.query_params.get("run")) %}
+  <aside class="side">
+    <a class="brand" href="/desk">Claim Intake Check</a>
+    <nav aria-label="Main">
+      <a href="/desk" {% if path in ("/desk", "/desk/claim") %}aria-current="page"{% endif %}>New check</a>
+      <a href="/desk/latest" {% if from_queue %}aria-current="page"{% endif %}>Work queue</a>
+      <a href="/desk/claims" {% if path.startswith("/desk/claims") and not from_queue %}aria-current="page"{% endif %}>All checks</a>
+    </nav>
+  </aside>
+  <div class="page">
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+    <footer>This records what the check found; it does not approve, deny, or pay anything.</footer>
+  </div>
+</body>
+</html>

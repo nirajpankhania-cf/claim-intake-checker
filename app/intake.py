@@ -54,7 +54,14 @@ RunChecks = Callable[[sqlite3.Connection, str, list[str]], Any]
 
 
 class IntakeFileError(ValueError):
-    """The upload as a whole can't be used. Nothing is stored."""
+    """The upload as a whole can't be used. Nothing is stored.
+
+    ``kind`` says what went wrong, so a page can word it without parsing the text.
+    """
+
+    def __init__(self, message: str, kind: str = "other") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
@@ -96,19 +103,21 @@ def decode_upload(data: bytes) -> str:
     if len(data) > config.MAX_INTAKE_BYTES:
         raise IntakeFileError(
             f"The CSV is {len(data):,} bytes; the limit is "
-            f"{config.MAX_INTAKE_BYTES:,} bytes."
+            f"{config.MAX_INTAKE_BYTES:,} bytes.",
+            kind="too_large",
         )
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise IntakeFileError("The CSV is not UTF-8 text.") from exc
+        raise IntakeFileError("The CSV is not UTF-8 text.", kind="encoding") from exc
 
 
 def parse_csv(text: str) -> ParsedBatch:
     """Check the header and the format of every row."""
     if len(text.encode("utf-8")) > config.MAX_INTAKE_BYTES:
         raise IntakeFileError(
-            f"The CSV is larger than the {config.MAX_INTAKE_BYTES:,}-byte limit."
+            f"The CSV is larger than the {config.MAX_INTAKE_BYTES:,}-byte limit.",
+            kind="too_large",
         )
     reader = csv.reader(io.StringIO(text.lstrip("﻿")))
     try:
@@ -161,7 +170,7 @@ def _check_header(header: list[str]) -> None:
     if duplicated:
         problems.append("repeated columns: " + ", ".join(duplicated))
     if problems:
-        raise IntakeFileError("The CSV header is wrong (" + "; ".join(problems) + ").")
+        raise IntakeFileError("The CSV header is wrong (" + "; ".join(problems) + ").", kind="header")
 
 
 def parse_claim_fields(raw: dict[str, str]) -> tuple[Claim | None, dict[str, str]]:
@@ -322,8 +331,39 @@ def _intake_flag(run_id: str, row: IntakeRow) -> Flag:
     )
 
 
-def ingest_csv(conn: sqlite3.Connection, text: str, run_checks: RunChecks) -> IntakeSummary:
+def split_rechecks(
+    conn: sqlite3.Connection, batch: ParsedBatch, skipped: list[IntakeRow]
+) -> tuple[list[str], list[IntakeRow]]:
+    """Pick the skipped rows that can be checked again in a new run.
+
+    A row qualifies when it is identical to the claim already stored. A row
+    with changed details stays skipped, because the stored claim is what would
+    be checked. Repeats within the file stay skipped too.
+    """
+    parsed = {line_no: claim for line_no, claim, _ in batch.accepted}
+    recheck: list[str] = []
+    still_skipped: list[IntakeRow] = []
+    for row in skipped:
+        stored = conn.execute("SELECT * FROM claims WHERE claim_id = ?", (row.submitted_claim_id,)).fetchone()
+        if (
+            row.earlier_line_no is None
+            and row.submitted_claim_id not in recheck
+            and stored is not None
+            and db.row_to_claim(stored) == parsed[row.line_no]
+        ):
+            recheck.append(row.submitted_claim_id)
+        else:
+            still_skipped.append(row)
+    return recheck, still_skipped
+
+
+def ingest_csv(
+    conn: sqlite3.Connection, text: str, run_checks: RunChecks, *, recheck_stored: bool = False
+) -> IntakeSummary:
     """Parse, store and check one CSV submission in a single transaction.
+
+    With ``recheck_stored``, rows identical to a stored claim are checked
+    again in this new run (the review desk); earlier results are kept.
 
     Raises ``IntakeFileError`` before touching the DB if the file is unusable.
     """
@@ -333,12 +373,15 @@ def ingest_csv(conn: sqlite3.Connection, text: str, run_checks: RunChecks) -> In
         # the same new claim_id can't both pass it.
         conn.execute("BEGIN IMMEDIATE")
         new_claims, skipped = split_resubmissions(conn, batch)
+        recheck: list[str] = []
+        if recheck_stored:
+            recheck, skipped = split_rechecks(conn, batch, skipped)
         run_id = create_run(conn, "csv", batch.row_count)
         for claim in new_claims:
             db.insert_claim(conn, claim)
-        new_ids = [claim.claim_id for claim in new_claims]
-        run_checks(conn, run_id, new_ids)
-        record_intake_flags(conn, run_id, skipped + batch.malformed, set(new_ids))
+        check_ids = [claim.claim_id for claim in new_claims] + recheck
+        run_checks(conn, run_id, check_ids)
+        record_intake_flags(conn, run_id, skipped + batch.malformed, set(check_ids))
     return IntakeSummary(run_id, len(new_claims), len(skipped), len(batch.malformed))
 
 

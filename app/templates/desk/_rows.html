@@ -1,0 +1,55 @@
+{% macro pager(listing, query={}) %}
+  <div class="pager">
+    <span>{% if listing.total %}{{ listing.first }}–{{ listing.last }} of {{ listing.total }}{% endif %}</span>
+    {% if listing.pages > 1 %}
+      <span class="pager-links">
+        {% if listing.page > 1 %}<a href="?{{ dict(query, page=listing.page - 1) | urlencode }}">Previous</a>{% endif %}
+        <span>Page {{ listing.page }} of {{ listing.pages }}</span>
+        {% if listing.page < listing.pages %}<a href="?{{ dict(query, page=listing.page + 1) | urlencode }}">Next</a>{% endif %}
+      </span>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro claim_cell(row, link) -%}
+  {% if row.has_page %}<a href="/desk/claims/{{ row.claim_id | urlencode }}{% if link %}?{{ link | urlencode }}{% endif %}">{{ row.claim_id }}</a>{% else %}{{ row.claim_id }}{% endif %}
+{%- endmacro %}
+
+{% macro table(rows, show_outcome=false, show_reasons=true, columns=[], link={}) %}
+  <div class="scroll">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th scope="col">Claim</th>
+          <th scope="col">Policy</th>
+          <th scope="col">Policyholder</th>
+          <th scope="col">Loss</th>
+          <th scope="col">Reported</th>
+          {% if show_outcome %}<th scope="col">Outcome</th><th scope="col">Checked</th>{% endif %}
+          {% for column in columns %}<th scope="col" class="mark" title="{{ column.name }}">{{ column.short }}</th>{% endfor %}
+          {% if show_reasons %}<th scope="col">What was found</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td class="id">{{ claim_cell(row, link) }}</td>
+            <td class="id">{{ row.policy_number }}</td>
+            <td class="person">{{ row.policyholder }}</td>
+            <td class="id">{{ row.loss_date }}</td>
+            <td class="id">{{ row.report_date }}</td>
+            {% if show_outcome %}<td class="nowrap"><span class="badge {{ 'solid' if row.outcome == 'Needs review' }}">{{ row.outcome }}</span></td><td class="id">{{ row.checked_on.isoformat() }}</td>{% endif %}
+            {% if columns %}
+              {% for line in row.checks[:columns | length] %}
+                <td class="mark {{ line.state }}" title="{{ line.name }}: {{ line.label }}">{% if line.state == "flagged" %}<span class="chip">⚑</span>{% elif line.state == "passed" %}✓{% else %}–{% endif %}<span class="sr"> {{ line.name }}: {{ line.label }}</span></td>
+              {% endfor %}
+            {% endif %}
+            {% if show_reasons %}
+              <td class="found">{% for reason in row.reasons %}<p class="reason">{{ reason }}</p>{% else %}—{% endfor %}</td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endmacro %}
