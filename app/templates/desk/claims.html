@@ -1,0 +1,41 @@
+{% extends "desk/base.html" %}
+{% import "desk/_rows.html" as list %}
+{% block title %}All checks{% endblock %}
+{% block content %}
+  <header class="head">
+    <h1>All checks</h1>
+    <a class="button ghost" href="/history.csv{% if export_query %}?{{ export_query }}{% endif %}">Export CSV</a>
+  </header>
+  {% if error %}<p class="alert" role="alert">{{ error }}</p>{% endif %}
+
+  <nav class="toggle" aria-label="Repeat checks">
+    <a href="?{{ every_link }}" {% if not raw.latest %}aria-current="page"{% endif %}>Every check</a>
+    <a href="?{{ once_link }}" {% if raw.latest %}aria-current="page"{% endif %}>Hide repeats</a>
+  </nav>
+
+  <form class="filters" method="get" action="/desk/claims">
+    {% if raw.latest %}<input type="hidden" name="latest" value="1">{% endif %}
+    <div>
+      <label for="outcome">Outcome</label>
+      <select id="outcome" name="outcome">
+        <option value="">Any</option>
+        {% for value, label in outcomes.items() %}
+          <option value="{{ value }}" {% if raw.outcome == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label for="date_from">From</label><input type="date" id="date_from" name="date_from" value="{{ raw.date_from }}"></div>
+    <div><label for="date_to">To</label><input type="date" id="date_to" name="date_to" value="{{ raw.date_to }}"></div>
+    <button type="submit">Filter</button>
+    {% if has_filters %}<a href="/desk/claims{% if raw.latest %}?latest=1{% endif %}">Clear</a>{% endif %}
+  </form>
+
+  {% if listing.total %}
+    {{ list.pager(listing, query) }}
+    {{ list.table(listing.rows, show_outcome=true) }}
+    <p class="legend">{% if raw.latest %}Each claim appears once, with its latest check. Repeat checks stay on the claim's audit trail.{% else %}A claim appears once for each time it was checked.{% endif %}</p>
+    {% if listing.pages > 1 %}{{ list.pager(listing, query) }}{% endif %}
+  {% elif not error %}
+    <p class="empty">No claims to show. Try a wider date range, or <a href="/desk">check some claims</a>.</p>
+  {% endif %}
+{% endblock %}

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import asdict
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -183,7 +183,7 @@ def test_ingest_stores_checks_and_counts(conn: sqlite3.Connection) -> None:
     text = to_csv([row(), row(claim_id="TEST-CLAIM-0002"), row(claim_id="TEST-CLAIM-0003", loss_date="")])
     summary = intake.ingest_csv(conn, text, fake)
 
-    assert (summary.accepted, summary.skipped, summary.malformed) == (2, 0, 1)
+    assert (summary.new, summary.updated, summary.unchanged, summary.malformed, summary.repeats) == (2, 0, 0, 1, 0)
     assert fake.calls == [(summary.run_id, ["TEST-CLAIM-0001", "TEST-CLAIM-0002"])]
     assert conn.execute("SELECT claim_count FROM check_runs").fetchone()[0] == 3
     assert db.claim_exists(conn, "TEST-CLAIM-0002")
@@ -193,31 +193,92 @@ def test_ingest_stores_checks_and_counts(conn: sqlite3.Connection) -> None:
     assert "loss_date is missing" in bad["reason"]
 
 
-def test_resubmission_of_stored_claim_is_skipped_and_names_earlier_run(conn: sqlite3.Connection) -> None:
+def versions(conn: sqlite3.Connection, claim_id: str = "TEST-CLAIM-0001") -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM claim_versions WHERE claim_id = ? ORDER BY id", (claim_id,)).fetchall()
+
+
+def test_resubmitted_claim_is_overwritten_versioned_and_rechecked(conn: sqlite3.Connection) -> None:
     first = intake.ingest_csv(conn, to_csv([row()]), FakeRunChecks())
     fake = FakeRunChecks()
-    second = intake.ingest_csv(conn, to_csv([row(claim_id=" test-claim-0001")]), fake)
+    second = intake.ingest_csv(conn, to_csv([row(claim_id=" test-claim-0001", vehicle_reg="ZZ99 ZZZ")]), fake)
 
-    assert (second.accepted, second.skipped) == (0, 1)
-    assert fake.calls == [(second.run_id, [])]
-    (skip,) = flags(conn, second.run_id)
-    assert skip["claim_id"] == f"ROW-{second.run_id}-2"
-    assert skip["outcome"] == "NEEDS_REVIEW"
-    assert first.run_id in skip["reason"]
-    inputs = json.loads(skip["inputs_json"])
-    assert inputs["earlier_run_id"] == first.run_id
-    assert inputs["submitted_claim_id"] == "TEST-CLAIM-0001"
-    # The original claim keeps a single, unchanged result.
-    outcomes = conn.execute("SELECT outcome FROM check_results WHERE claim_id = 'TEST-CLAIM-0001'").fetchall()
-    assert [r[0] for r in outcomes] == ["READY_FOR_ADJUSTER"]
+    assert (second.new, second.updated, second.unchanged) == (0, 1, 0)
+    assert fake.calls == [(second.run_id, ["TEST-CLAIM-0001"])]
+    assert db.get_claim(conn, "TEST-CLAIM-0001").vehicle_reg == "ZZ99 ZZZ"
+    (old,) = versions(conn)
+    assert (old["run_id"], old["vehicle_reg"]) == (second.run_id, make_claim().vehicle_reg)
+    assert db.row_to_claim(old) == make_claim()
+    assert flags(conn, second.run_id) == []  # no INTAKE flag: the row was checked
+    runs = conn.execute("SELECT run_id FROM check_results WHERE claim_id = 'TEST-CLAIM-0001' ORDER BY id").fetchall()
+    assert [r[0] for r in runs] == [first.run_id, second.run_id]  # the earlier result is kept
 
 
-def test_resubmission_within_one_file(conn: sqlite3.Connection) -> None:
-    summary = intake.ingest_csv(conn, to_csv([row(), row()]), FakeRunChecks())
-    assert (summary.accepted, summary.skipped) == (1, 1)
-    (skip,) = flags(conn, summary.run_id)
-    assert skip["claim_id"] == f"ROW-{summary.run_id}-3"
-    assert json.loads(skip["inputs_json"])["earlier_line_no"] == 2
+def test_identical_resubmission_writes_no_version_but_a_result(conn: sqlite3.Connection) -> None:
+    intake.ingest_csv(conn, to_csv([row()]), FakeRunChecks())
+    fake = FakeRunChecks()
+    second = intake.ingest_csv(conn, to_csv([row()]), fake)
+
+    assert (second.new, second.updated, second.unchanged) == (0, 0, 1)
+    assert fake.calls == [(second.run_id, ["TEST-CLAIM-0001"])]
+    assert versions(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM check_results").fetchone()[0] == 2
+
+
+def test_in_file_repeats_latest_report_date_wins_ties_last(conn: sqlite3.Connection) -> None:
+    base = make_claim()
+    later = (base.report_date + timedelta(days=1)).isoformat()
+    text = to_csv(
+        [
+            row(vehicle_reg="FIRST", report_date=later),
+            row(vehicle_reg="OLDER"),  # earlier report date: loses even though it is later in the file
+            row(claim_id="TEST-CLAIM-0002", vehicle_reg="TIE-A"),
+            row(claim_id="TEST-CLAIM-0002", vehicle_reg="TIE-B"),  # same date: last row wins
+        ]
+    )
+    fake = FakeRunChecks()
+    summary = intake.ingest_csv(conn, text, fake)
+
+    assert (summary.new, summary.repeats, summary.malformed) == (2, 2, 0)
+    assert fake.calls == [(summary.run_id, ["TEST-CLAIM-0001", "TEST-CLAIM-0002"])]
+    assert db.get_claim(conn, "TEST-CLAIM-0001").vehicle_reg == "FIRST"
+    assert db.get_claim(conn, "TEST-CLAIM-0002").vehicle_reg == "TIE-B"
+
+
+def test_dropped_repeats_are_not_stored_and_counted(conn: sqlite3.Connection) -> None:
+    summary = intake.ingest_csv(conn, to_csv([row(), row(), row()]), FakeRunChecks())
+    assert (summary.new, summary.repeats) == (1, 2)
+    assert conn.execute("SELECT claim_count FROM check_runs").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM check_results").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM claim_versions").fetchone()[0] == 0
+    assert flags(conn, summary.run_id) == []
+
+
+def test_malformed_history_id_does_not_block_a_valid_claim(conn: sqlite3.Connection) -> None:
+    first = intake.ingest_csv(conn, to_csv([row(vehicle_reg="")]), FakeRunChecks())
+    (bad,) = flags(conn, first.run_id)
+    assert bad["claim_id"] == "TEST-CLAIM-0001"  # malformed row recorded under its own id
+    fake = FakeRunChecks()
+    second = intake.ingest_csv(conn, to_csv([row()]), fake)
+    assert (second.new, second.malformed) == (1, 0)
+    assert fake.calls == [(second.run_id, ["TEST-CLAIM-0001"])]
+    assert db.claim_exists(conn, "TEST-CLAIM-0001")
+
+
+def test_changed_fields_matches_claim_equality() -> None:
+    a = make_claim()
+    assert intake.changed_fields(a, make_claim()) == []
+    b = make_claim(vehicle_reg="ZZ99 ZZZ", description="other", attachments=["x.jpg"])
+    assert intake.changed_fields(a, b) == ["vehicle_reg", "description", "attachments"]
+    assert (a == b) == (intake.changed_fields(a, b) == [])
+
+
+def test_version_and_update_roll_back_with_the_runner(conn: sqlite3.Connection) -> None:
+    intake.ingest_csv(conn, to_csv([row()]), FakeRunChecks())
+    with pytest.raises(RuntimeError):
+        intake.ingest_csv(conn, to_csv([row(vehicle_reg="ZZ99 ZZZ")]), FakeRunChecks(fail=True))
+    assert db.get_claim(conn, "TEST-CLAIM-0001") == make_claim()
+    assert versions(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM check_runs").fetchone()[0] == 1
 
 
 @pytest.mark.parametrize("claim_id", ["", "TEST-CLAIM-0001"])
@@ -231,7 +292,7 @@ def test_malformed_row_without_usable_id_gets_row_key(conn: sqlite3.Connection, 
 def test_runner_failure_stores_nothing(conn: sqlite3.Connection) -> None:
     with pytest.raises(RuntimeError):
         intake.ingest_csv(conn, to_csv([row(), row(claim_id="X", loss_date="")]), FakeRunChecks(fail=True))
-    for table in ("claims", "check_runs", "check_results", "flags"):
+    for table in ("claims", "check_runs", "check_results", "flags", "claim_versions"):
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 
 
@@ -240,7 +301,7 @@ def test_free_text_is_stored_verbatim(conn: sqlite3.Connection) -> None:
     summary = intake.ingest_csv(conn, to_csv([row(description=note, loss_location="  x  ")]), FakeRunChecks())
     stored = db.row_to_claim(conn.execute("SELECT * FROM claims").fetchone())
     assert (stored.description, stored.loss_location) == (note, "  x  ")
-    assert summary.accepted == 1 and summary.malformed == 0
+    assert summary.new == 1 and summary.malformed == 0
 
 
 def test_generated_demo_csv(tmp_path: Path, conn: sqlite3.Connection) -> None:
@@ -253,10 +314,12 @@ def test_generated_demo_csv(tmp_path: Path, conn: sqlite3.Connection) -> None:
 
     summary = intake.ingest_csv(conn, text, FakeRunChecks())
 
-    assert (summary.accepted, summary.skipped, summary.malformed) == (500, 6, 6)
+    # The 6 S8 rows repeat a claim_id in the same file: the last row wins and
+    # the first is dropped, so nothing is updated on a fresh upload.
+    assert (summary.new, summary.updated, summary.unchanged, summary.malformed, summary.repeats) == (500, 0, 0, 6, 6)
     reasons = [f["reason"] for f in flags(conn, summary.run_id)]
-    assert sum("submitted again" in r for r in reasons) == 6
-    assert sum("malformed" in r for r in reasons) == 6
+    assert len(reasons) == 6 and all("malformed" in r for r in reasons)
+    assert conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0] == 500
 
 
 # --- routes -----------------------------------------------------------------
@@ -272,7 +335,8 @@ def test_upload_redirects_to_review_queue(client: tuple[TestClient, FakeRunCheck
     location = urlsplit(response.headers["location"])
     assert location.path == "/review"
     assert parse_qs(location.query) == {
-        "run_id": [fake.calls[0][0]], "accepted": ["1"], "skipped": ["1"], "malformed": ["1"],
+        "run_id": [fake.calls[0][0]], "new": ["1"], "updated": ["0"], "unchanged": ["0"],
+        "malformed": ["1"], "repeats": ["1"],
     }
 
 
@@ -335,7 +399,7 @@ def test_bad_file_gets_400_even_without_a_runner(tmp_path: Path) -> None:
     assert response.status_code == 400 and "missing columns" in response.text
 
 
-def test_concurrent_resubmission_waits_for_the_lock(tmp_path: Path) -> None:
+def test_concurrent_upload_waits_for_the_lock(tmp_path: Path) -> None:
     path = tmp_path / "lock.db"
     first, second = db.get_connection(path), db.get_connection(path)
     db.init_db(first)
@@ -344,5 +408,5 @@ def test_concurrent_resubmission_waits_for_the_lock(tmp_path: Path) -> None:
     with pytest.raises(sqlite3.OperationalError, match="locked"):
         intake.ingest_csv(second, to_csv([row()]), FakeRunChecks())
     first.rollback()
-    assert intake.ingest_csv(second, to_csv([row()]), FakeRunChecks()).accepted == 1
+    assert intake.ingest_csv(second, to_csv([row()]), FakeRunChecks()).new == 1
     first.close(); second.close()

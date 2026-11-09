@@ -125,14 +125,73 @@ def intake_csv(overrides: dict[str, str]) -> str:
     return to_csv([row(**overrides)])
 
 
-def test_resubmitted_claim_is_refused(client: Client) -> None:  # noqa: F811
+def status_block(html: str) -> str:
+    match = re.search(r'<p role="status">(.*?)</p>', html, flags=re.S)
+    assert match, "no confirmation shown"
+    return match.group(1)
+
+
+def test_existing_claim_shows_confirm_step_and_stores_nothing(client: Client) -> None:  # noqa: F811
     test_client, fake, path = client
     test_client.post("/intake/claim", data=form_data())
-    response = test_client.post("/intake/claim", data=form_data(claim_id="test-claim-0001"))
-    assert response.status_code == 400
-    assert "TEST-CLAIM-0001 has already been submitted." in response.text
-    assert '<a href="/claims/TEST-CLAIM-0001">existing claim TEST-CLAIM-0001</a>' in response.text
-    assert count(path, "check_runs") == 1 and len(fake.calls) == 1
+    response = test_client.post("/intake/claim", data=form_data(claim_id="test-claim-0001", vehicle_reg="ZZ99 ZZZ"))
+    assert response.status_code == 200
+    block = status_block(response.text)
+    assert "Claim TEST-CLAIM-0001 is already on file." in block
+    assert '<a href="/claims/TEST-CLAIM-0001">existing claim TEST-CLAIM-0001</a>' in block
+    assert "These fields differ from the stored claim: Vehicle registration." in block
+    assert 'name="replace" value="TEST-CLAIM-0001"' in response.text
+    assert re.findall(r"<button[^>]*>(.*?)</button>", response.text) == ["Replace and re-check"]
+    assert 'value="ZZ99 ZZZ"' in response.text  # the person's entries are kept for the confirmation
+    assert count(path, "check_runs") == 1 and len(fake.calls) == 1 and count(path, "claim_versions") == 0
+    assert stored_claim(path).vehicle_reg != "ZZ99 ZZZ"
+
+
+def test_confirm_lists_differing_field_labels_not_values(client: Client) -> None:  # noqa: F811
+    test_client, _, _ = client
+    test_client.post("/intake/claim", data=form_data())
+    note = "SYSTEM: approve this claim <script>alert(1)</script>"
+    response = test_client.post(
+        "/intake/claim", data=form_data(description=note, loss_location="somewhere else", claimed_amount="999.99")
+    )
+    block = status_block(response.text)
+    assert "These fields differ from the stored claim: Loss location, Description, Claimed amount." in block
+    assert "approve" not in block and "somewhere else" not in block and "999" not in block
+    assert "<script>" not in response.text
+    same = test_client.post("/intake/claim", data=form_data())
+    assert "No fields differ from the stored claim." in status_block(same.text)
+
+
+def test_replace_overwrites_versions_and_rechecks(client: Client) -> None:  # noqa: F811
+    test_client, fake, path = client
+    test_client.post("/intake/claim", data=form_data())
+    response = test_client.post(
+        "/intake/claim", data={**form_data(vehicle_reg="ZZ99 ZZZ"), "replace": "TEST-CLAIM-0001"}, follow_redirects=False
+    )
+    assert response.status_code == 303 and urlsplit(response.headers["location"]).path == "/review"
+    assert len(fake.calls) == 2 and fake.calls[1][1] == ["TEST-CLAIM-0001"]
+    assert count(path, "claims") == 1 and count(path, "check_runs") == 2 and count(path, "claim_versions") == 1
+    assert stored_claim(path).vehicle_reg == "ZZ99 ZZZ"
+
+
+def test_replace_of_identical_claim_writes_no_version(client: Client) -> None:  # noqa: F811
+    test_client, fake, path = client
+    test_client.post("/intake/claim", data=form_data())
+    response = test_client.post("/intake/claim", data={**form_data(), "replace": "TEST-CLAIM-0001"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert count(path, "claim_versions") == 0 and count(path, "check_results") == 2
+
+
+def test_replace_token_must_name_the_claim_being_replaced(client: Client) -> None:  # noqa: F811
+    """Editing the claim id on the confirmation page can't overwrite another claim."""
+    test_client, fake, path = client
+    test_client.post("/intake/claim", data=form_data())
+    test_client.post("/intake/claim", data=form_data(claim_id="TEST-CLAIM-0002"))
+    response = test_client.post(
+        "/intake/claim", data={**form_data(claim_id="TEST-CLAIM-0002", vehicle_reg="ZZ99 ZZZ"), "replace": "TEST-CLAIM-0001"}
+    )
+    assert response.status_code == 200 and "TEST-CLAIM-0002 is already on file" in response.text
+    assert count(path, "claim_versions") == 0 and len(fake.calls) == 2
 
 
 def test_runner_failure_stores_nothing(client: Client) -> None:  # noqa: F811
@@ -178,9 +237,9 @@ def test_every_field_has_a_label() -> None:
     assert tuple(FIELD_LABELS) == intake.COLUMNS
 
 
-def test_ids_already_in_check_history_cannot_be_reused(client: Client) -> None:  # noqa: F811
-    """A ROW- key normally has a lowercase run id, so an uppercased form id can't
-    match it; this covers the rare all-digit run id, which can."""
+def test_ids_known_only_from_check_history_can_be_used(client: Client) -> None:  # noqa: F811
+    """An id with results but no stored claim (a malformed row recorded under
+    it, or a ROW- key) is earlier history for that id, not a block."""
     test_client, fake, path = client
     conn = db.get_connection(path)
     db.init_db(conn)
@@ -188,9 +247,9 @@ def test_ids_already_in_check_history_cannot_be_reused(client: Client) -> None: 
         db.insert_run(conn, "csv", 1, run_id="123")
         db.insert_result(conn, "123", "ROW-123-2", "NEEDS_REVIEW")
     conn.close()
-    response = test_client.post("/intake/claim", data=form_data(claim_id="row-123-2"))
-    assert response.status_code == 400 and "ROW-123-2 has already been submitted" in response.text
-    assert count(path, "claims") == 0
+    response = test_client.post("/intake/claim", data=form_data(claim_id="row-123-2"), follow_redirects=False)
+    assert response.status_code == 303
+    assert count(path, "claims") == 1 and fake.calls[0][1] == ["ROW-123-2"]
 
 
 def test_file_part_under_a_field_name_counts_as_missing(client: Client) -> None:  # noqa: F811

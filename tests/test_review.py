@@ -130,9 +130,12 @@ def test_rule_menu_lists_rules_that_have_flagged(seeded: tuple[TestClient, sqlit
 
 def test_intake_summary_banner(seeded: tuple[TestClient, sqlite3.Connection]) -> None:
     client = seeded[0]
-    shown = client.get("/review?run_id=RUN-B&accepted=3&skipped=1&malformed=2").text
-    assert "3 accepted, 1 skipped as resubmissions, 2 malformed" in shown
-    assert "Upload checked" not in client.get("/review?accepted=3&skipped=x&malformed=2").text
+    shown = client.get("/review?run_id=RUN-B&new=3&updated=1&unchanged=2&malformed=4&repeats=0").text
+    assert "3 new, 1 updated, 2 re-checked with no change, 4 malformed." in shown
+    shown = client.get("/review?run_id=RUN-B&new=3&updated=0&unchanged=0&malformed=0&repeats=2").text
+    assert "0 malformed; 2 repeated rows in the file dropped (latest report date kept)." in shown
+    assert "Upload checked" not in client.get("/review?new=3&updated=x&unchanged=0&malformed=2&repeats=0").text
+    assert "Upload checked" not in client.get("/review?new=3&updated=1&malformed=2").text
     assert "Upload checked" not in client.get("/review").text
 
 
@@ -229,7 +232,7 @@ def test_demo_csv_upload_lands_in_the_queue(setup: tuple[TestClient, sqlite3.Con
     response = client.post("/intake/csv", files={"file": ("claims.csv", upload, "text/csv")})
 
     assert response.status_code == 200 and str(response.url.path) == "/review"
-    assert "500 accepted, 6 skipped as resubmissions, 6 malformed" in response.text
+    assert "500 new, 0 updated, 0 re-checked with no change, 6 malformed; 6 repeated rows" in response.text
     rules_shown = set(re.findall(r'<option value="([^"]+)"', response.text))
     assert {"INTAKE", "R0", "R1", "R1b", "R2", "R3"} <= rules_shown
     assert len(claim_ids(response.text)) == conn.execute(
@@ -242,7 +245,7 @@ def test_demo_csv_upload_lands_in_the_queue(setup: tuple[TestClient, sqlite3.Con
 
 
 def test_banner_ignores_non_ascii_digits(seeded: tuple[TestClient, sqlite3.Connection]) -> None:
-    response = seeded[0].get("/review?accepted=%C2%B2&skipped=1&malformed=1")
+    response = seeded[0].get("/review?new=%C2%B2&updated=1&unchanged=1&malformed=1&repeats=0")
     assert response.status_code == 200 and "Upload checked" not in response.text
 
 
@@ -266,16 +269,17 @@ def test_rule_and_date_must_match_the_same_flag(setup: tuple[TestClient, sqlite3
     assert claim_ids(client.get("/review?rule=R1&date_from=2026-11-03").text) == []
 
 
-def test_claim_page_shows_later_resubmission(setup: tuple[TestClient, sqlite3.Connection]) -> None:
+def test_claim_page_shows_both_checks_after_overwrite(setup: tuple[TestClient, sqlite3.Connection]) -> None:
     client, conn = setup
     fake = lambda c, run_id, ids: [db.insert_result(c, run_id, i, "READY_FOR_ADJUSTER") for i in ids]  # noqa: E731
     from tests.test_intake import row, to_csv
 
-    intake.ingest_csv(conn, to_csv([row()]), fake)
-    second = intake.ingest_csv(conn, to_csv([row()]), fake)
+    first = intake.ingest_csv(conn, to_csv([row()]), fake)
+    second = intake.ingest_csv(conn, to_csv([row(vehicle_reg="ZZ99 ZZZ")]), fake)
     text = client.get("/claims/TEST-CLAIM-0001").text
-    assert f"recorded as <a href=\"/claims/ROW-{second.run_id}-2\">" in text
-    assert "submitted again" in text
+    assert "ZZ99 ZZZ" in text  # the claim as last submitted
+    assert text.index(second.run_id) < text.index(first.run_id)  # both checks, newest first
+    assert "ROW-" not in text and "submitted again" not in text
 
 
 def test_claim_lookup_tolerates_case_but_keeps_row_keys(seeded: tuple[TestClient, sqlite3.Connection]) -> None:
@@ -290,3 +294,23 @@ def test_unflagged_result_has_no_flag_date(seeded: tuple[TestClient, sqlite3.Con
 
     (item,) = review.claim_history(seeded[1], "TEST-CLAIM-0002")
     assert item.flags == [] and item.flagged_on is None
+
+
+def test_group_repeats_collapses_same_outcome_and_rules(seeded: tuple[TestClient, sqlite3.Connection]) -> None:
+    from app import review
+
+    client, conn = seeded
+    record(conn, "RUN-D", DAY2, "TEST-CLAIM-0002", [])
+    record(conn, "RUN-E", DAY3, "TEST-CLAIM-0002", [])
+    record(conn, "RUN-F", "2026-11-04T09:00:00+00:00", "TEST-CLAIM-0002", [r("R2", "Late report")])
+    history = review.claim_history(conn, "TEST-CLAIM-0002")
+
+    groups = review.group_repeats(history, set())
+    assert [(g.first.run_id, [a.run_id for a in g.again]) for g in groups] == [("RUN-F", []), ("RUN-A", ["RUN-D", "RUN-E"])]
+    # A run that replaced the claim starts a new group even with the same result.
+    groups = review.group_repeats(history, {"RUN-E"})
+    assert [(g.first.run_id, [a.run_id for a in g.again]) for g in groups] == [("RUN-F", []), ("RUN-E", []), ("RUN-A", ["RUN-D"])]
+
+    text = client.get("/claims/TEST-CLAIM-0002").text
+    assert text.count("<h3>Run") == 2
+    assert "Checked again with the same result in run <code>RUN-D</code>" in text and "<code>RUN-E</code>" in text

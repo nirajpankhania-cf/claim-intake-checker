@@ -1,0 +1,92 @@
+{% extends "desk/base.html" %}
+{% block title %}Claim {{ claim_id }}{% endblock %}
+{% block content %}
+  {% set context = {"run": run_id, "queue": queue} %}
+  <p class="crumb">
+    {% if nav %}
+      <a href="/desk/runs/{{ run_id | urlencode }}?{{ {"queue": queue, "page": nav.page} | urlencode }}">Work queue: {{ queue_label }}</a>
+    {% else %}
+      <a href="/desk/claims">All checks</a>
+    {% endif %}
+  </p>
+  <header class="head">
+    <div class="title">
+      <h1>{{ claim_id }}</h1>
+      <span class="badge {{ 'solid' if result.outcome == 'Needs review' }}">{{ result.outcome or "Not checked yet" }}</span>
+    </div>
+    {% if nav %}
+      <nav class="stepper" aria-label="Claims in this queue">
+        {% if nav.previous %}<a class="button ghost" href="/desk/claims/{{ nav.previous | urlencode }}?{{ context | urlencode }}">Previous</a>{% else %}<span class="button ghost off">Previous</span>{% endif %}
+        <span>{{ nav.position }} of {{ nav.total }}</span>
+        {% if nav.next %}<a class="button" href="/desk/claims/{{ nav.next | urlencode }}?{{ context | urlencode }}">Next</a>{% else %}<span class="button off">Next</span>{% endif %}
+      </nav>
+    {% endif %}
+  </header>
+
+  <dl class="facts">
+    <div><dt>Policy</dt><dd>{{ claim.policy_number }}</dd></div>
+    <div><dt>Policyholder</dt><dd>{{ claim.policyholder_name }}</dd></div>
+    <div><dt>Loss date</dt><dd>{{ claim.loss_date.isoformat() }}</dd></div>
+    <div><dt>Reported</dt><dd>{{ claim.report_date.isoformat() }}</dd></div>
+    <div><dt>Last checked</dt><dd>{{ result.checked_on.isoformat() if result.checked_on else "—" }}</dd></div>
+  </dl>
+
+  <div class="file">
+    <div>
+      <section>
+        <h2>Check results</h2>
+        {% if result.checks %}
+          <div class="scroll">
+            <table class="grid">
+              <thead><tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Detail</th></tr></thead>
+              <tbody>
+                {% for line in result.checks %}
+                  <tr class="{{ line.state }}">
+                    <td class="nowrap">{{ line.name }}</td>
+                    <td class="nowrap">{{ line.label }}</td>
+                    <td>{{ line.reason or ("No policy was found to check against." if line.state == "not_run" else "—") }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="empty">This claim hasn't been through a check yet.</p>
+        {% endif %}
+      </section>
+
+      <section>
+        <h2>{{ "Claim as last submitted" if result.updated else "Claim as submitted" }}</h2>
+        <dl class="fields">
+          {% for label, value in fields %}
+            <div {% if loop.index0 == 9 %}class="full"{% endif %}><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+          {% endfor %}
+        </dl>
+      </section>
+    </div>
+
+    <aside>
+      <section>
+        <h2>Audit trail</h2>
+        {% if audit %}
+          <ol class="trail">
+            {% for entry in audit %}
+              <li>
+                <span class="id">{{ entry.when }}</span>
+                <strong>{{ entry.outcome }}</strong> · {{ entry.source }}
+                {% for text in entry.recorded %}<p class="reason">{{ text }}</p>{% endfor %}
+                {% if entry.updated %}<p class="reason"><strong>Updated:</strong> {{ entry.updated | join("; ") }}.</p>{% endif %}
+                {% if entry.again %}<p class="reason">{{ entry.again }}</p>{% endif %}
+              </li>
+            {% endfor %}
+          </ol>
+        {% else %}
+          <p class="empty">No checks recorded for this claim yet.</p>
+        {% endif %}
+        {% if result.updated %}
+          <p class="legend">This claim was updated {{ result.updated }} {{ "time" if result.updated == 1 else "times" }}; earlier versions are kept. Repeat checks with the same result are shown as one entry.</p>
+        {% endif %}
+      </section>
+    </aside>
+  </div>
+{% endblock %}

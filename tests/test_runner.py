@@ -116,6 +116,23 @@ def test_duplicate_of_a_claim_from_an_earlier_run(conn: sqlite3.Connection) -> N
     assert [f["rule_id"] for f in flags(conn, run_id)] == ["R3"]
 
 
+def test_updated_claim_keeps_its_place_for_r3(conn: sqlite3.Connection) -> None:
+    """An overwrite is an UPDATE, so the claim keeps its submission order: the
+    later-stored claim gets R3, not the one that was updated to match it."""
+    first = make_claim(claim_id="TEST-CLAIM-0001", loss_date=MID_TERM - timedelta(days=3))
+    second = make_claim(claim_id="TEST-CLAIM-0002")
+    store(conn, first, second)
+    with conn:
+        run_id = db.insert_run(conn, "csv", 1)
+        db.insert_claim_version(conn, run_id, first)
+        db.update_claim(conn, make_claim(claim_id="TEST-CLAIM-0001"))  # now the same loss_date as 0002
+        run_checks(conn, run_id, ["TEST-CLAIM-0001", "TEST-CLAIM-0002"])
+
+    (flag,) = flags(conn, run_id)
+    assert (flag["claim_id"], flag["rule_id"]) == ("TEST-CLAIM-0002", "R3")
+    assert results(conn, run_id)["TEST-CLAIM-0001"] == "READY_FOR_ADJUSTER"
+
+
 def test_only_given_claims_are_checked_and_no_run_or_commit(conn: sqlite3.Connection) -> None:
     run_id = store(conn, make_claim(claim_id="TEST-CLAIM-0001"), make_claim(claim_id="TEST-CLAIM-0002"))
 
@@ -182,10 +199,10 @@ def test_demo_csv_is_checked_by_the_real_runner(live: tuple[TestClient, Path], t
     counts = dict(conn.execute("SELECT outcome, COUNT(*) FROM check_results GROUP BY outcome").fetchall())
     rules = {r[0] for r in conn.execute("SELECT DISTINCT rule_id FROM flags")}
     conn.close()
-    assert sum(counts.values()) == 512  # 500 checked + 12 intake rows
+    assert sum(counts.values()) == 506  # 500 checked + 6 malformed intake rows
     assert {"R0", "R1", "R1b", "R2", "R3", "INTAKE"} <= rules
-    # 6 each of S1, S2, S3, S5, S6, S7 are flagged by rules; 12 by intake.
-    assert counts["NEEDS_REVIEW"] == 6 * 6 + 12
+    # 6 each of S1, S2, S3, S5, S6, S7 are flagged by rules; 6 by intake.
+    assert counts["NEEDS_REVIEW"] == 6 * 6 + 6
 
 
 # --- idempotent re-runs ---------------------------------------------------------

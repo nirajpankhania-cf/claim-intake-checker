@@ -1,0 +1,76 @@
+{% extends "desk/base.html" %}
+{% import "desk/_rows.html" as list %}
+{% block title %}Work queue{% endblock %}
+
+{% macro check_rows(title, policy_gate) %}
+  <tr class="group"><th scope="colgroup" colspan="4">{{ title }}</th></tr>
+  {% for check in checks if check.policy_gate == policy_gate %}
+    <tr><td>{{ check.name }}</td><td class="num">{{ check.passed }}</td><td class="num">{{ check.flagged }}</td><td class="num">{{ check.not_run }}</td></tr>
+  {% endfor %}
+{% endmacro %}
+
+{% block content %}
+  <header class="head">
+    <div>
+      <h1>Work queue</h1>
+      <p class="meta">
+        {%- if checked_on %}Checked {{ checked_on.isoformat() }} · {{ source }}{% endif -%}
+        {% if counts["Updated"] %} · {{ counts["Updated"] }} updated{% endif -%}
+        {% if counts["Re-checked unchanged"] %} · {{ counts["Re-checked unchanged"] }} re-checked with no change{% endif -%}
+        {% if counts["Updated"] or counts["Re-checked unchanged"] %}; earlier results are kept{% endif -%}
+        {% if repeats %} · {{ repeats }} repeated {{ "row" if repeats == 1 else "rows" }} in the file {{ "was" if repeats == 1 else "were" }} dropped (latest report date kept){% endif %}
+      </p>
+    </div>
+    <dl class="kpis">
+      {% for label in ("Received", "Ready for adjuster", "Needs review") %}
+        <div><dd>{{ counts[label] }}</dd><dt>{{ label }}</dt></div>
+      {% endfor %}
+    </dl>
+  </header>
+
+  {% if nothing_changed %}
+    <p class="alert" role="status">
+      <strong>Nothing in this file had changed.</strong> Every claim had been checked before and was checked again; earlier results are kept.{% if counts["Malformed data"] %} See the <a href="?queue=malformed">malformed rows</a>.{% endif %}
+    </p>
+  {% endif %}
+
+  {% if not rows %}
+    <p class="empty">This check has no claims to show.</p>
+  {% else %}
+    <nav class="tabs" aria-label="Queues">
+      {% for name, label, number in tabs %}
+        {% if name == "ready" %}<span class="tab-gap"></span>{% endif %}
+        <a href="?queue={{ name }}" {% if queue == name %}aria-current="page"{% endif %}>{{ label }} <b>{{ number }}</b></a>
+      {% endfor %}
+      <a href="?queue=summary" {% if queue == "summary" %}aria-current="page"{% endif %}>What was checked</a>
+    </nav>
+
+    {% if queue == "summary" %}
+      <div class="scroll narrow">
+        <table class="grid">
+          <thead><tr><th scope="col">Check</th><th scope="col" class="num">Passed</th><th scope="col" class="num">Flagged</th><th scope="col" class="num">Couldn't check</th></tr></thead>
+          <tbody>
+            {{ check_rows("Policy gates", true) }}
+            {{ check_rows("Other checks", false) }}
+          </tbody>
+        </table>
+      </div>
+      <p class="legend">"Couldn't check" means no policy was found to check against. {{ overlaps }} {{ "claim was" if overlaps == 1 else "claims were" }} flagged by more than one check.</p>
+    {% elif listing.total %}
+      {% set link = {"run": run_id, "queue": queue} %}
+      {{ list.pager(listing, {"queue": queue}) }}
+      {% if queue == "malformed" %}
+        <p class="legend first">The checks did not run on these rows, so they need review.</p>
+        {{ list.table(listing.rows, link=link) }}
+      {% elif queue == "ready" %}
+        {{ list.table(listing.rows, show_reasons=false, columns=columns, link=link, change_labels=change_labels) }}
+      {% else %}
+        {{ list.table(listing.rows, columns=columns, link=link, change_labels=change_labels) }}
+      {% endif %}
+      {% if queue != "malformed" %}<p class="legend">✓ passed · ⚑ flagged · – couldn't be checked because no policy was found{% if counts["Updated"] or counts["Re-checked unchanged"] %} · Updated: this upload replaced the stored claim; the earlier version is kept{% endif %}</p>{% endif %}
+      {% if listing.pages > 1 %}{{ list.pager(listing, {"queue": queue}) }}{% endif %}
+    {% else %}
+      <p class="empty">Nothing in {{ queue_label | lower }} for this check.</p>
+    {% endif %}
+  {% endif %}
+{% endblock %}

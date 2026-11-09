@@ -1,0 +1,76 @@
+{% extends "desk/base.html" %}
+{% block title %}Enter a claim{% endblock %}
+
+{% macro problem(name) -%}
+  {% if name in errors %}<span class="error" id="{{ name }}-error" role="alert">{{ errors[name] }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro described(name) -%}
+  {% if name in errors %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+{%- endmacro %}
+
+{% macro field(name, type="text") -%}
+  <div class="field">
+    <label for="{{ name }}">{{ labels[name] }}{% if name in required %} <span class="req">(required)</span>{% endif %}</label>
+    {% if type == "textarea" %}
+      <textarea id="{{ name }}" name="{{ name }}" rows="4" {{ described(name) }}>{{ values.get(name, "") }}</textarea>
+    {% else %}
+      <input type="{{ type }}" id="{{ name }}" name="{{ name }}" value="{{ values.get(name, "") }}" {% if name in required %}required{% endif %} {{ described(name) }}>
+    {% endif %}
+    {{ problem(name) }}
+  </div>
+{%- endmacro %}
+
+{% macro choice(name, options) -%}
+  <div class="field">
+    <label for="{{ name }}">{{ labels[name] }} <span class="req">(required)</span></label>
+    <select id="{{ name }}" name="{{ name }}" required {{ described(name) }}>
+      <option value="">Choose…</option>
+      {% for option in options %}
+        <option value="{{ option }}" {% if values.get(name, "").strip().lower() == option %}selected{% endif %}>{{ option | replace("_", " ") }}</option>
+      {% endfor %}
+    </select>
+    {{ problem(name) }}
+  </div>
+{%- endmacro %}
+
+{% block content %}
+  <p class="crumb"><a href="/desk">New check</a></p>
+  <header class="head"><h1>Enter a claim</h1></header>
+  {% if errors %}
+    <p class="alert" role="alert"><strong>Nothing was stored.</strong> Fix the {{ "field" if errors | length == 1 else "fields" }} marked below.</p>
+  {% endif %}
+  {% if existing_claim_id %}
+    <p class="alert" role="status"><strong>Claim {{ existing_claim_id }} is already on file.</strong>
+      See the <a href="/desk/claims/{{ existing_claim_id | urlencode }}">existing claim</a>.
+      {% if changed %}These fields differ from the stored claim: {{ changed | join(", ") }}.{% else %}No fields differ from the stored claim.{% endif %}
+      Submitting again will replace the stored claim and check it again; the earlier version and its results are kept.</p>
+  {% endif %}
+
+  <form class="claim-form" method="post" action="/intake/claim">
+    <input type="hidden" name="next" value="desk">
+    {% if existing_claim_id %}<input type="hidden" name="replace" value="{{ existing_claim_id }}">{% endif %}
+    {{ field("claim_id") }}
+    {{ field("policy_number") }}
+    {{ field("policyholder_name") }}
+    {{ field("claimant_name") }}
+    {{ field("vehicle_reg") }}
+    {{ field("loss_date", "date") }}
+    {{ field("report_date", "date") }}
+    {{ choice("loss_type", loss_types) }}
+    {{ field("loss_location") }}
+    {{ field("claimed_amount") }}
+    <fieldset class="field" {{ described("third_party_involved") }}>
+      <legend>{{ labels.third_party_involved }} <span class="req">(required)</span></legend>
+      {% for value, text in (("true", "Yes"), ("false", "No")) %}
+        <label class="radio"><input type="radio" name="third_party_involved" value="{{ value }}" required {% if values.get("third_party_involved", "").strip().lower() == value %}checked{% endif %}> {{ text }}</label>
+      {% endfor %}
+      {{ problem("third_party_involved") }}
+    </fieldset>
+    {{ field("police_reference") }}
+    {{ field("attachments") }}
+    {{ choice("submitted_via", submitted_via) }}
+    <div class="wide">{{ field("description", "textarea") }}</div>
+    <div class="wide"><button type="submit">{{ "Replace and re-check" if existing_claim_id else "Check claim" }}</button></div>
+  </form>
+{% endblock %}

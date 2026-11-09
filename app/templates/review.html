@@ -14,7 +14,7 @@
     <p role="status">Submission checked: <a href="/claims/{{ result.claim_id | urlencode }}">{{ result.claim_id }}</a> is {{ "Ready for adjuster" if result.outcome == "READY_FOR_ADJUSTER" else "Needs review" }}.</p>
   {% endfor %}
   {% if summary %}
-    <p role="status">Upload checked: {{ summary.accepted }} accepted, {{ summary.skipped }} skipped as resubmissions, {{ summary.malformed }} malformed.</p>
+    <p role="status">Upload checked: {{ summary.new }} new, {{ summary.updated }} updated, {{ summary.unchanged }} re-checked with no change, {{ summary.malformed }} malformed{% if summary.repeats %}; {{ summary.repeats }} repeated {{ "row" if summary.repeats == 1 else "rows" }} in the file dropped (latest report date kept){% endif %}.</p>
   {% endif %}
   {% if error %}
     <p role="alert"><strong>Filter not applied.</strong> {{ error }}</p>

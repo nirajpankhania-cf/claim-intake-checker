@@ -4,12 +4,18 @@ Flow for one upload (all in one transaction, owned by ``ingest_csv``):
 
 1. ``parse_csv`` checks the file as a whole and each row's *format*. It never
    judges dates against each other or against a policy; that is rule logic.
-2. Rows whose ``claim_id`` is already on file, or earlier in the same file,
-   are resubmissions (S8): skipped, not re-checked.
-3. ``create_run`` records the run; accepted claims are inserted.
-4. ``run_checks`` (the runner, CIC-28) checks the accepted claims.
-5. ``record_intake_flags`` records every skipped (S8) and malformed (S9) row
-   as a ``NEEDS_REVIEW`` result plus an ``INTAKE`` flag.
+2. ``pick_latest`` keeps one row per ``claim_id`` in the file: the most recent
+   ``report_date`` wins, and a tie goes to the last row. The others are
+   dropped and only counted.
+3. ``create_run`` records the run; ``store_claim`` inserts each new claim or,
+   for a ``claim_id`` already on file (S8), overwrites the stored claim after
+   saving the old version to ``claim_versions`` if anything changed.
+4. ``run_checks`` (the runner, CIC-28) checks every kept claim, new or not.
+5. ``record_intake_flags`` records every malformed (S9) row as a
+   ``NEEDS_REVIEW`` result plus an ``INTAKE`` flag.
+
+Resubmission handling is a team assumption pending the client's answer (see
+``docs/decisions.md``, 2026-11-09).
 
 Free text (names, ``description``, ``loss_location``) is copied verbatim. It
 is never inspected, and never changes what intake does.
@@ -22,6 +28,7 @@ import io
 import re
 import sqlite3
 from collections.abc import Callable
+from collections import Counter
 from dataclasses import dataclass, field, fields
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -54,20 +61,25 @@ RunChecks = Callable[[sqlite3.Connection, str, list[str]], Any]
 
 
 class IntakeFileError(ValueError):
-    """The upload as a whole can't be used. Nothing is stored."""
+    """The upload as a whole can't be used. Nothing is stored.
+
+    ``kind`` says what went wrong, so a page can word it without parsing the text.
+    """
+
+    def __init__(self, message: str, kind: str = "other") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
 class IntakeRow:
-    """A row that was not checked by the rules: resubmitted or malformed."""
+    """A row that was not checked by the rules because it is malformed."""
 
     line_no: int
-    kind: Literal["resubmission", "malformed"]
+    kind: Literal["malformed"]
     submitted_claim_id: str
     problems: list[str]
     raw: dict[str, str]
-    earlier_run_id: str | None = None
-    earlier_line_no: int | None = None
 
 
 @dataclass
@@ -82,10 +94,15 @@ class ParsedBatch:
 
 @dataclass(frozen=True)
 class IntakeSummary:
+    """What one upload did. ``repeats`` is rows dropped because the same
+    claim_id appeared again in the file; they are not stored."""
+
     run_id: str
-    accepted: int
-    skipped: int
+    new: int
+    updated: int
+    unchanged: int
     malformed: int
+    repeats: int
 
 
 # --- parsing ---------------------------------------------------------------
@@ -96,19 +113,21 @@ def decode_upload(data: bytes) -> str:
     if len(data) > config.MAX_INTAKE_BYTES:
         raise IntakeFileError(
             f"The CSV is {len(data):,} bytes; the limit is "
-            f"{config.MAX_INTAKE_BYTES:,} bytes."
+            f"{config.MAX_INTAKE_BYTES:,} bytes.",
+            kind="too_large",
         )
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise IntakeFileError("The CSV is not UTF-8 text.") from exc
+        raise IntakeFileError("The CSV is not UTF-8 text.", kind="encoding") from exc
 
 
 def parse_csv(text: str) -> ParsedBatch:
     """Check the header and the format of every row."""
     if len(text.encode("utf-8")) > config.MAX_INTAKE_BYTES:
         raise IntakeFileError(
-            f"The CSV is larger than the {config.MAX_INTAKE_BYTES:,}-byte limit."
+            f"The CSV is larger than the {config.MAX_INTAKE_BYTES:,}-byte limit.",
+            kind="too_large",
         )
     reader = csv.reader(io.StringIO(text.lstrip("﻿")))
     try:
@@ -161,7 +180,7 @@ def _check_header(header: list[str]) -> None:
     if duplicated:
         problems.append("repeated columns: " + ", ".join(duplicated))
     if problems:
-        raise IntakeFileError("The CSV header is wrong (" + "; ".join(problems) + ").")
+        raise IntakeFileError("The CSV header is wrong (" + "; ".join(problems) + ").", kind="header")
 
 
 def parse_claim_fields(raw: dict[str, str]) -> tuple[Claim | None, dict[str, str]]:
@@ -235,36 +254,49 @@ def parse_claim_fields(raw: dict[str, str]) -> tuple[Claim | None, dict[str, str
 
 # --- storing and checking --------------------------------------------------
 
+StoreState = Literal["new", "updated", "unchanged"]
+AcceptedRow = tuple[int, Claim, dict[str, str]]
+
 
 def create_run(conn: sqlite3.Connection, source: db.RunSource, claim_count: int) -> str:
     """Record a new check run. ``claim_count`` is every row in the submission."""
     return db.insert_run(conn, source, claim_count)
 
 
-def split_resubmissions(
-    conn: sqlite3.Connection, batch: ParsedBatch
-) -> tuple[list[Claim], list[IntakeRow]]:
-    """Separate new claims from claim_ids already on file or earlier in the batch."""
-    new: list[Claim] = []
-    skipped: list[IntakeRow] = []
-    first_line: dict[str, int] = {}
-    for line_no, claim, raw in batch.accepted:
-        if claim.claim_id in first_line:
-            skipped.append(
-                IntakeRow(line_no, "resubmission", claim.claim_id,
-                          ["claim_id appears earlier in this file"], raw,
-                          earlier_line_no=first_line[claim.claim_id])
-            )
-        elif db.claim_id_in_use(conn, claim.claim_id):
-            skipped.append(
-                IntakeRow(line_no, "resubmission", claim.claim_id,
-                          ["claim_id is already on file"], raw,
-                          earlier_run_id=db.get_latest_run_for_claim(conn, claim.claim_id))
-            )
-        else:
-            first_line[claim.claim_id] = line_no
-            new.append(claim)
-    return new, skipped
+def pick_latest(accepted: list[AcceptedRow]) -> tuple[list[AcceptedRow], int]:
+    """One row per claim_id: the most recent ``report_date`` wins, ties go to
+    the last row in the file. Returns the kept rows (in first-seen order, so
+    submission order is stable) and how many rows were dropped."""
+    winners: dict[str, AcceptedRow] = {}
+    for entry in accepted:
+        claim = entry[1]
+        current = winners.get(claim.claim_id)
+        if current is None or claim.report_date >= current[1].report_date:
+            winners[claim.claim_id] = entry
+    return list(winners.values()), len(accepted) - len(winners)
+
+
+def changed_fields(old: Claim, new: Claim) -> list[str]:
+    """Names of the fields that differ, in ``Claim`` field order."""
+    return [f.name for f in fields(Claim) if getattr(old, f.name) != getattr(new, f.name)]
+
+
+def store_claim(conn: sqlite3.Connection, run_id: str, claim: Claim) -> StoreState:
+    """Insert a new claim, or overwrite the stored one with this submission.
+
+    When the stored claim differs, its old version is saved to
+    ``claim_versions`` (against ``run_id``) before it is overwritten. An
+    identical resubmission stores nothing; it is only checked again.
+    """
+    stored = db.get_claim(conn, claim.claim_id)
+    if stored is None:
+        db.insert_claim(conn, claim)
+        return "new"
+    if stored == claim:
+        return "unchanged"
+    db.insert_claim_version(conn, run_id, stored)
+    db.update_claim(conn, claim)
+    return "updated"
 
 
 def record_intake_flags(
@@ -273,39 +305,27 @@ def record_intake_flags(
     rows: list[IntakeRow],
     taken_ids: set[str],
 ) -> None:
-    """Record each unchecked row as ``NEEDS_REVIEW`` with an ``INTAKE`` flag.
+    """Record each malformed row as ``NEEDS_REVIEW`` with an ``INTAKE`` flag.
 
-    Resubmissions, rows with no claim_id, and rows whose claim_id is already
-    used by a stored claim are keyed ``ROW-<run_id>-<line_no>`` so they never
-    share a key with a real claim.
+    Rows with no claim_id, or whose claim_id is used by a stored claim or by
+    a claim checked in this run, are keyed ``ROW-<run_id>-<line_no>`` so they
+    never share a key with a real claim.
     """
     used = set(taken_ids)
     for row in rows:
         key = row.submitted_claim_id
-        if row.kind == "resubmission" or not key or key in used or db.claim_exists(conn, key):
+        if not key or key in used or db.claim_exists(conn, key):
             key = f"ROW-{run_id}-{row.line_no}"
         used.add(key)
         db.insert_result(conn, run_id, key, "NEEDS_REVIEW")
-        db.insert_flag(conn, run_id, key, _intake_flag(run_id, row))
+        db.insert_flag(conn, run_id, key, _intake_flag(row))
 
 
-def _intake_flag(run_id: str, row: IntakeRow) -> Flag:
-    if row.kind == "resubmission":
-        if row.earlier_line_no is not None:
-            where = f"earlier in this upload (line {row.earlier_line_no}, run {run_id})"
-        elif row.earlier_run_id is not None:
-            where = f"already on file, last checked in run {row.earlier_run_id}"
-        else:
-            where = "already on file, with no earlier check run recorded"
-        reason = (
-            f"Line {row.line_no}: claim {row.submitted_claim_id} was submitted "
-            f"again ({where}). Skipped, not re-checked."
-        )
-    else:
-        reason = (
-            f"Line {row.line_no}: not checked because the row is malformed: "
-            + "; ".join(row.problems) + "."
-        )
+def _intake_flag(row: IntakeRow) -> Flag:
+    reason = (
+        f"Line {row.line_no}: not checked because the row is malformed: "
+        + "; ".join(row.problems) + "."
+    )
     return Flag(
         rule_id=INTAKE_RULE_ID,
         reason=reason,
@@ -314,9 +334,6 @@ def _intake_flag(run_id: str, row: IntakeRow) -> Flag:
             "line_no": row.line_no,
             "submitted_claim_id": row.submitted_claim_id or None,
             "problems": row.problems,
-            "earlier_run_id": row.earlier_run_id
-            or (run_id if row.earlier_line_no is not None else None),
-            "earlier_line_no": row.earlier_line_no,
             "row": row.raw,
         },
     )
@@ -328,42 +345,52 @@ def ingest_csv(conn: sqlite3.Connection, text: str, run_checks: RunChecks) -> In
     Raises ``IntakeFileError`` before touching the DB if the file is unusable.
     """
     batch = parse_csv(text)
+    kept, repeats = pick_latest(batch.accepted)
     with conn:
-        # Take the write lock before the resubmission check, so two uploads of
-        # the same new claim_id can't both pass it.
+        # Take the write lock before looking for stored claims, so two uploads
+        # of the same claim_id serialise and the later one overwrites.
         conn.execute("BEGIN IMMEDIATE")
-        new_claims, skipped = split_resubmissions(conn, batch)
-        run_id = create_run(conn, "csv", batch.row_count)
-        for claim in new_claims:
-            db.insert_claim(conn, claim)
-        new_ids = [claim.claim_id for claim in new_claims]
-        run_checks(conn, run_id, new_ids)
-        record_intake_flags(conn, run_id, skipped + batch.malformed, set(new_ids))
-    return IntakeSummary(run_id, len(new_claims), len(skipped), len(batch.malformed))
+        run_id = create_run(conn, "csv", batch.row_count)  # before store_claim: versions reference the run
+        states = Counter(store_claim(conn, run_id, claim) for _, claim, _ in kept)
+        check_ids = [claim.claim_id for _, claim, _ in kept]
+        run_checks(conn, run_id, check_ids)
+        record_intake_flags(conn, run_id, batch.malformed, set(check_ids))
+    return IntakeSummary(
+        run_id, states["new"], states["updated"], states["unchanged"], len(batch.malformed), repeats
+    )
 
 
 # --- single claim (form) -----------------------------------------------------
 
 
 class ClaimAlreadySubmitted(Exception):
-    """The form's claim_id is already on file. Nothing was stored."""
+    """The form's claim_id is already on file and ``replace`` was not given.
 
-    def __init__(self, claim_id: str) -> None:
+    Nothing was stored. ``existing`` is the stored claim, so the form can say
+    which fields differ before the person confirms the replacement.
+    """
+
+    def __init__(self, claim_id: str, existing: Claim) -> None:
         super().__init__(f"{claim_id} has already been submitted.")
         self.claim_id = claim_id
+        self.existing = existing
 
 
-def submit_claim(conn: sqlite3.Connection, claim: Claim, run_checks: RunChecks) -> str:
+def submit_claim(
+    conn: sqlite3.Connection, claim: Claim, run_checks: RunChecks, *, replace: bool = False
+) -> str:
     """Store and check one claim from the form, in one transaction. Returns the run_id.
 
-    Unlike CSV, a resubmitted claim_id is refused with nothing stored, since
-    the person submitting is there to see why.
+    A claim_id already on file is refused unless ``replace`` is set, since the
+    person submitting is there to confirm. With ``replace`` it is stored the
+    same way as a CSV row (``store_claim``) and checked again.
     """
     with conn:
         conn.execute("BEGIN IMMEDIATE")
-        if db.claim_id_in_use(conn, claim.claim_id):
-            raise ClaimAlreadySubmitted(claim.claim_id)
+        stored = db.get_claim(conn, claim.claim_id)
+        if stored is not None and not replace:
+            raise ClaimAlreadySubmitted(claim.claim_id, stored)
         run_id = create_run(conn, "form", 1)
-        db.insert_claim(conn, claim)
+        store_claim(conn, run_id, claim)
         run_checks(conn, run_id, [claim.claim_id])
     return run_id

@@ -9,18 +9,23 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
-from app import config, db, history, intake, review
+from app import config, db, desk, history, intake, review
 from app.models import LOSS_TYPES, SUBMITTED_VIA
 
 app = FastAPI(title="Claim Intake Check")
+app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
 templates = Jinja2Templates(directory=Path(__file__).with_name("templates"))
+_STYLESHEET = Path(__file__).with_name("static") / "desk.css"
+# Changes whenever the stylesheet does, so a browser never pairs new pages with an old cached copy.
+templates.env.globals["stylesheet_version"] = lambda: _STYLESHEET.stat().st_mtime_ns
 
 
 async def get_db() -> AsyncIterator[sqlite3.Connection]:
@@ -71,6 +76,7 @@ async def intake_csv(
     form = await request.form(max_part_size=2 * config.MAX_INTAKE_BYTES)
     upload = form.get("file")
     pasted = form.get("csv_text") or ""
+    to_desk = form.get("next") == "desk"
     try:
         data = await upload.read(config.MAX_INTAKE_BYTES + 1) if isinstance(upload, UploadFile) else b""
         if data and str(pasted).strip():
@@ -83,13 +89,19 @@ async def intake_csv(
             raise intake.IntakeFileError("Choose a CSV file or paste CSV text.")
         summary = intake.ingest_csv(conn, text, run_checks)
     except intake.IntakeFileError as exc:
+        if to_desk:
+            return _desk_home(request, conn, desk.plain_file_error(exc))
         return _form(request, error=str(exc), status_code=400)
+    if to_desk:
+        return _desk_result(summary.run_id)
     query = urlencode(
         {
             "run_id": summary.run_id,
-            "accepted": summary.accepted,
-            "skipped": summary.skipped,
+            "new": summary.new,
+            "updated": summary.updated,
+            "unchanged": summary.unchanged,
             "malformed": summary.malformed,
+            "repeats": summary.repeats,
         }
     )
     return RedirectResponse(f"/review?{query}", status_code=303)
@@ -166,6 +178,7 @@ async def history_page(
 @app.get("/history.csv")
 async def history_csv(
     raw: dict[str, str] = Depends(history_query),
+    latest: str | None = None,
     conn: sqlite3.Connection = Depends(get_db),
 ) -> Response:
     """The history page's rows, with the same filters, as a CSV download."""
@@ -174,7 +187,7 @@ async def history_csv(
     except review.FilterError as exc:
         return PlainTextResponse(str(exc), status_code=400)
     return Response(
-        history.to_csv(review.history(conn, filters)),
+        history.to_csv(desk.one_per_claim(conn, filters) if latest == "1" else review.history(conn, filters)),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="claim-history.csv"'},
     )
@@ -195,9 +208,17 @@ async def claim_detail(
             break
     else:
         raise HTTPException(status_code=404, detail="No claim or intake row with that ID.")
-    return templates.TemplateResponse(
-        request, "claim.html", {"claim_id": claim_id, "claim": claim, "history": history}
-    )
+    versions = db.get_claim_versions(conn, claim_id)
+    changes = desk.version_changes(versions, claim, FIELD_LABELS) if claim is not None else {}
+    context = {
+        "claim_id": claim_id,
+        "claim": claim,
+        "history": history,
+        "groups": review.group_repeats(history, set(changes)),
+        "changes": changes,
+        "versions": versions,
+    }
+    return templates.TemplateResponse(request, "claim.html", context)
 
 
 def _form_results(conn: sqlite3.Connection, run_id: str | None) -> list[sqlite3.Row]:
@@ -209,7 +230,7 @@ def _form_results(conn: sqlite3.Connection, run_id: str | None) -> list[sqlite3.
 
 def _intake_summary(request: Request) -> dict[str, int] | None:
     """Counts passed on the intake redirect, if all are present and whole numbers."""
-    names = ("accepted", "skipped", "malformed")
+    names = ("new", "updated", "unchanged", "malformed", "repeats")
     values = [request.query_params.get(n, "") for n in names]
     if not all(v.isascii() and v.isdecimal() for v in values):
         return None
@@ -246,17 +267,30 @@ async def submit_claim(
     conn: sqlite3.Connection = Depends(get_db),
     run_checks: intake.RunChecks = Depends(get_run_checks),
 ) -> Response:
-    """Primary intake path: one claim. Errors re-show the form; nothing is stored."""
+    """Primary intake path: one claim. Errors re-show the form; nothing is stored.
+
+    A claim_id already on file re-shows the form as a confirmation: which
+    fields differ, and a "Replace and re-check" button that sends the same
+    claim_id back in ``replace``. Only then is the stored claim overwritten.
+    """
     form = await request.form()
     # A file part sent under a field name is treated as a missing value.
     raw = {name: value if isinstance(value := form.get(name), str) else "" for name in intake.COLUMNS}
+    to_desk = form.get("next") == "desk"
+    show_form = _desk_claim_form if to_desk else _claim_form
     claim, errors = intake.parse_claim_fields(raw)
     if claim is None:
-        return _claim_form(request, raw, errors)
+        return show_form(request, raw, errors)
+    # The token must name the claim being replaced, so editing the id on the
+    # confirmation page can't silently overwrite a different claim.
+    replace = form.get("replace") == claim.claim_id
     try:
-        run_id = intake.submit_claim(conn, claim, run_checks)
+        run_id = intake.submit_claim(conn, claim, run_checks, replace=replace)
     except intake.ClaimAlreadySubmitted as exc:
-        return _claim_form(request, raw, {"claim_id": str(exc)}, existing_claim_id=exc.claim_id)
+        changed = [FIELD_LABELS[name] for name in intake.changed_fields(exc.existing, claim)]
+        return show_form(request, raw, existing_claim_id=exc.claim_id, changed=changed)
+    if to_desk:
+        return _desk_result(run_id)
     return RedirectResponse(f"/review?{urlencode({'run_id': run_id})}", status_code=303)
 
 
@@ -265,10 +299,17 @@ def _claim_form(
     values: dict[str, str],
     errors: dict[str, str] | None = None,
     existing_claim_id: str | None = None,
+    template: str = "intake_claim.html",
+    changed: list[str] | None = None,
 ) -> Response:
+    """The form, with field errors (400) or as a replace confirmation (200).
+
+    ``changed`` is the labels of the fields that differ from the stored claim;
+    labels only, so submitted text is never repeated outside its own field.
+    """
     return templates.TemplateResponse(
         request,
-        "intake_claim.html",
+        template,
         {
             "values": values,
             "errors": errors or {},
@@ -277,6 +318,7 @@ def _claim_form(
             "loss_types": LOSS_TYPES,
             "submitted_via": SUBMITTED_VIA,
             "existing_claim_id": existing_claim_id,
+            "changed": changed or [],
         },
         status_code=400 if errors else 200,
     )
@@ -289,3 +331,174 @@ def _form(request: Request, error: str | None = None, status_code: int = 200) ->
         {"error": error, "columns": intake.COLUMNS, "max_bytes": config.MAX_INTAKE_BYTES},
         status_code=status_code,
     )
+
+
+# --- review desk: plain-language pages for a manager, over the same code -----
+
+
+def _desk_result(run_id: str) -> Response:
+    return RedirectResponse(f"/desk/runs/{quote(run_id, safe='')}", status_code=303)
+
+
+def _desk_home(request: Request, conn: sqlite3.Connection, error: str | None = None) -> Response:
+    context = {"error": error, "runs": desk.recent_runs(conn)}
+    return templates.TemplateResponse(request, "desk/home.html", context, status_code=400 if error else 200)
+
+
+def _desk_not_found(request: Request, message: str) -> Response:
+    return templates.TemplateResponse(request, "desk/not_found.html", {"message": message}, status_code=404)
+
+
+def _desk_claim_form(
+    request: Request,
+    values: dict[str, str],
+    errors: dict[str, str] | None = None,
+    existing_claim_id: str | None = None,
+    changed: list[str] | None = None,
+) -> Response:
+    plain = {name: desk.plain_problem(text, FIELD_LABELS) for name, text in (errors or {}).items()}
+    return _claim_form(request, values, plain, existing_claim_id, template="desk/claim_form.html", changed=changed)
+
+
+@app.get("/desk", response_class=HTMLResponse)
+async def desk_home(request: Request, conn: sqlite3.Connection = Depends(get_db)) -> Response:
+    return _desk_home(request, conn)
+
+
+@app.get("/desk/latest")
+async def desk_latest(conn: sqlite3.Connection = Depends(get_db)) -> Response:
+    """The most recent check's work queue, or the start page if there are none."""
+    latest = desk.recent_runs(conn, limit=1)
+    return _desk_result(str(latest[0]["run_id"])) if latest else RedirectResponse("/desk", status_code=303)
+
+
+@app.post("/desk/sample")
+async def desk_sample(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+    run_checks: intake.RunChecks = Depends(get_run_checks),
+) -> Response:
+    """Send the generated sample file through the normal CSV intake."""
+    try:
+        text = intake.decode_upload(desk.SAMPLE_CSV.read_bytes())
+        summary = intake.ingest_csv(conn, text, run_checks)
+    except FileNotFoundError:
+        return _desk_home(request, conn, desk.SAMPLE_MISSING)
+    except intake.IntakeFileError as exc:
+        return _desk_home(request, conn, desk.plain_file_error(exc))
+    return _desk_result(summary.run_id)
+
+
+@app.get("/desk/claim", response_class=HTMLResponse)
+def desk_claim_form(request: Request) -> Response:
+    return _desk_claim_form(request, {"submitted_via": "form"})
+
+
+@app.get("/desk/runs/{run_id}", response_class=HTMLResponse)
+async def desk_run(
+    request: Request,
+    run_id: str,
+    queue: str | None = None,
+    page: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """One check's work queue, a tab at a time. Read-only."""
+    if review.run_source(conn, run_id) is None:
+        return _desk_not_found(request, "We couldn't find that check.")
+    items = review.history(conn, review.Filters(run_id=run_id))
+    rows = desk.to_rows(conn, items, FIELD_LABELS, desk.change_markers(conn, run_id))
+    queues = desk.split_queues(rows)
+    current = queue if queue in queues or queue == "summary" else desk.first_queue(queues)
+    context = {
+        "rows": rows,
+        "run_id": run_id,
+        "counts": desk.counts(rows),
+        "change_labels": desk.CHANGE_LABELS,
+        "repeats": desk.in_file_repeats(conn, run_id),
+        "nothing_changed": desk.nothing_changed(rows),
+        "checked_on": review.utc_date(items[0].run_started_at) if items else None,
+        "source": desk.SOURCES.get(review.run_source(conn, run_id) or "", ""),
+        "tabs": [(name, label, len(queues[name])) for name, label in desk.QUEUES.items()],
+        "queue": current,
+        "queue_label": desk.QUEUES.get(current, ""),
+        "listing": desk.paginate(queues.get(current, []), page),
+        "columns": desk.CHECKS,
+        "checks": desk.check_summary(rows),
+        "overlaps": sum(row.flag_count > 1 for row in rows),
+    }
+    return templates.TemplateResponse(request, "desk/result.html", context)
+
+
+@app.get("/desk/claims", response_class=HTMLResponse)
+async def desk_claims(
+    request: Request,
+    outcome: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    page: str | None = None,
+    latest: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """Every claim checked, filtered by outcome and date. Read-only."""
+    error, rows = None, []
+    once = latest == "1"
+    raw = {"outcome": outcome or "", "date_from": date_from or "", "date_to": date_to or "", "latest": "1" if once else ""}
+    chosen = {name: value for name, value in raw.items() if value and name != "latest"}
+    try:
+        filters = review.parse_filters(None, None, date_from, date_to, outcome)
+        items = desk.one_per_claim(conn, filters) if once else review.history(conn, filters)
+        rows = desk.to_rows(conn, items, FIELD_LABELS)
+    except review.FilterError as exc:
+        error = str(exc)
+    context = {
+        "listing": desk.paginate(rows, page),
+        "outcomes": review.OUTCOMES,
+        "raw": raw,
+        "query": {name: value for name, value in raw.items() if value},
+        "every_link": urlencode(chosen),
+        "once_link": urlencode({**chosen, "latest": "1"}),
+        "has_filters": bool(chosen),
+        "export_query": urlencode({name: value for name, value in raw.items() if value}),
+        "error": error,
+    }
+    return templates.TemplateResponse(request, "desk/claims.html", context, status_code=400 if error else 200)
+
+
+def _queue_position(
+    conn: sqlite3.Connection, run_id: str | None, queue: str | None, claim_id: str
+) -> dict[str, object] | None:
+    """Previous and Next within the queue this claim was opened from, if any."""
+    if not run_id or queue not in desk.QUEUES or review.run_source(conn, run_id) is None:
+        return None
+    items = review.history(conn, review.Filters(run_id=run_id))
+    return desk.neighbours(desk.split_queues(desk.to_rows(conn, items, FIELD_LABELS))[queue], claim_id)
+
+
+@app.get("/desk/claims/{claim_id:path}", response_class=HTMLResponse)
+async def desk_claim(
+    request: Request,
+    claim_id: str,
+    run: str | None = None,
+    queue: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """One stored claim's fields and the reasons it was flagged. Read-only."""
+    for candidate in dict.fromkeys((claim_id, claim_id.strip().upper())):
+        claim = review.get_claim(conn, candidate)
+        if claim is not None:
+            history_items = review.claim_history(conn, candidate)
+            versions = db.get_claim_versions(conn, candidate)
+            context = {
+                "claim_id": candidate,
+                "claim": claim,
+                "fields": desk.claim_fields(claim, FIELD_LABELS),
+                "result": desk.claim_result(history_items, candidate, versions),
+                "audit": desk.audit_trail(history_items, versions, claim, FIELD_LABELS),
+                "state_labels": desk.STATE_LABELS,
+                "nav": _queue_position(conn, run, queue, candidate),
+                "run_id": run,
+                "queue": queue,
+                "queue_label": desk.QUEUES.get(queue or "", ""),
+            }
+            return templates.TemplateResponse(request, "desk/claim.html", context)
+    return _desk_not_found(request, "We couldn't find a claim with that number.")

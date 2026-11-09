@@ -1,5 +1,5 @@
 -- Claim Intake Check SQLite schema. Loaded by app.db.init_db().
--- check_results and flags are append-only: triggers reject UPDATE/DELETE.
+-- check_results, flags and claim_versions are append-only: triggers reject UPDATE/DELETE.
 -- claims.policy_number has no FK to policies: unknown policies are flagged by R0.
 CREATE TABLE IF NOT EXISTS policies (
     policy_number     TEXT PRIMARY KEY,
@@ -81,3 +81,41 @@ BEGIN SELECT RAISE(ABORT, 'flags is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS flags_no_delete
 BEFORE DELETE ON flags
 BEGIN SELECT RAISE(ABORT, 'flags is append-only'); END;
+
+-- Superseded versions of a claim. A row is written only when a resubmission
+-- changes at least one field, just before claims is updated; claims always
+-- holds the current version. Same columns as claims so row_to_claim() reads
+-- a version unchanged. run_id is the run that replaced this version.
+CREATE TABLE IF NOT EXISTS claim_versions (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id               TEXT NOT NULL REFERENCES check_runs (run_id),
+    replaced_at          TEXT NOT NULL,
+    claim_id             TEXT NOT NULL,
+    policy_number        TEXT NOT NULL,
+    policyholder_name    TEXT NOT NULL,
+    claimant_name        TEXT,
+    vehicle_reg          TEXT NOT NULL,
+    loss_date            TEXT NOT NULL,
+    report_date          TEXT NOT NULL,
+    loss_type            TEXT NOT NULL
+                         CHECK (loss_type IN ('collision', 'theft', 'glass',
+                                'vandalism', 'weather', 'third_party')),
+    loss_location        TEXT,
+    description          TEXT,
+    claimed_amount       TEXT NOT NULL,
+    third_party_involved INTEGER NOT NULL CHECK (third_party_involved IN (0, 1)),
+    police_reference     TEXT,
+    attachments          TEXT NOT NULL DEFAULT '[]',
+    submitted_via        TEXT NOT NULL CHECK (submitted_via IN ('email', 'form'))
+);
+CREATE INDEX IF NOT EXISTS idx_claim_versions_claim ON claim_versions (claim_id, id);
+-- One version per claim per run: a run replaces a claim at most once.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_claim_versions_run_claim ON claim_versions (run_id, claim_id);
+
+CREATE TRIGGER IF NOT EXISTS claim_versions_no_update
+BEFORE UPDATE ON claim_versions
+BEGIN SELECT RAISE(ABORT, 'claim_versions is append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS claim_versions_no_delete
+BEFORE DELETE ON claim_versions
+BEGIN SELECT RAISE(ABORT, 'claim_versions is append-only'); END;

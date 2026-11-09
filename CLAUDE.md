@@ -25,7 +25,8 @@ docs/           client_brief.md, meeting_notes.md, decisions.md
 ## Conventions
 - Rules are pure functions with no DB access; the runner passes them what they need.
 - Every threshold (reporting window days, duplicate match fields, boundary-day inclusivity) lives in `app/config.py` with a documented default and the client decision that set it.
-- Every flag row stores: run_id, claim_id, rule_id, reason (plain English), inputs snapshot (JSON), created_at. History is append-only — never UPDATE or DELETE flag rows.
+- Every flag row stores: run_id, claim_id, rule_id, reason (plain English), inputs snapshot (JSON), created_at. History is append-only — never UPDATE or DELETE rows in `check_results`, `flags` or `claim_versions`.
+- `claims` holds the current version of each claim. It is changed only through `db.update_claim`, and only after `db.insert_claim_version` has saved the version being replaced (`intake.store_claim` does both). Nothing deletes a claim.
 - Dates are ISO `YYYY-MM-DD`; compare as `date` objects, never as strings.
 - Tests for each rule must cover: clearly inside, clearly outside, and both boundary days.
 - Keep PRs under ~400 lines. Don't refactor unrelated files.

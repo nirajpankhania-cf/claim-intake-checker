@@ -8,9 +8,13 @@ Plain ``sqlite3``, no ORM. Storage conventions:
 * Booleans are ``INTEGER`` 0/1; ``Claim.attachments`` is a JSON array.
 * Free text (names, ``description``, ``loss_location``) is stored verbatim.
 
-``check_results`` and ``flags`` are append-only history. This module has no
-UPDATE or DELETE helper for them, and triggers in ``app/schema.sql`` reject any
-attempt to update or delete their rows.
+``check_results``, ``flags`` and ``claim_versions`` are append-only history.
+This module has no UPDATE or DELETE helper for them, and triggers in
+``app/schema.sql`` reject any attempt to update or delete their rows.
+
+``claims`` holds the current version of each claim. It is changed only through
+``update_claim``, and only after ``insert_claim_version`` has saved the version
+being replaced (see ``app.intake.store_claim``). Nothing deletes a claim.
 
 ``claims.policy_number`` deliberately has no foreign key to ``policies``: a
 claim quoting an unknown policy is a valid input that rule R0 flags.
@@ -29,7 +33,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from app.models import Claim, Flag, Outcome, Policy
+from app.models import Claim, ClaimVersion, Flag, Outcome, Policy
 
 RunSource = Literal["form", "csv"]
 
@@ -134,34 +138,63 @@ def insert_policy(conn: sqlite3.Connection, policy: Policy) -> None:
     )
 
 
+CLAIM_COLUMNS: tuple[str, ...] = (
+    "claim_id", "policy_number", "policyholder_name", "claimant_name",
+    "vehicle_reg", "loss_date", "report_date", "loss_type", "loss_location",
+    "description", "claimed_amount", "third_party_involved",
+    "police_reference", "attachments", "submitted_via",
+)
+
+
+def _claim_values(claim: Claim) -> tuple[object, ...]:
+    """The claim's column values in ``CLAIM_COLUMNS`` order, in storage form."""
+    return (
+        claim.claim_id,
+        claim.policy_number,
+        claim.policyholder_name,
+        claim.claimant_name,
+        claim.vehicle_reg,
+        _iso(claim.loss_date),
+        _iso(claim.report_date),
+        claim.loss_type,
+        claim.loss_location,
+        claim.description,
+        str(claim.claimed_amount),
+        int(claim.third_party_involved),
+        claim.police_reference,
+        json.dumps(list(claim.attachments)),
+        claim.submitted_via,
+    )
+
+
 def insert_claim(conn: sqlite3.Connection, claim: Claim) -> None:
     conn.execute(
-        """
-        INSERT INTO claims (
-            claim_id, policy_number, policyholder_name, claimant_name,
-            vehicle_reg, loss_date, report_date, loss_type, loss_location,
-            description, claimed_amount, third_party_involved,
-            police_reference, attachments, submitted_via
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            claim.claim_id,
-            claim.policy_number,
-            claim.policyholder_name,
-            claim.claimant_name,
-            claim.vehicle_reg,
-            _iso(claim.loss_date),
-            _iso(claim.report_date),
-            claim.loss_type,
-            claim.loss_location,
-            claim.description,
-            str(claim.claimed_amount),
-            int(claim.third_party_involved),
-            claim.police_reference,
-            json.dumps(list(claim.attachments)),
-            claim.submitted_via,
-        ),
+        f"INSERT INTO claims ({', '.join(CLAIM_COLUMNS)})"
+        f" VALUES ({', '.join('?' * len(CLAIM_COLUMNS))})",
+        _claim_values(claim),
     )
+
+
+def update_claim(conn: sqlite3.Connection, claim: Claim) -> None:
+    """Overwrite the stored claim with ``claim`` (matched on ``claim_id``).
+
+    A plain UPDATE, so the row keeps its rowid and therefore its place in
+    submission order, which the runner uses for R3. Call
+    ``insert_claim_version`` with the stored claim first; nothing else may
+    change a claim. Raises ``LookupError`` if no claim has that id.
+    """
+    assignments = ", ".join(f"{name} = ?" for name in CLAIM_COLUMNS[1:])
+    cur = conn.execute(
+        f"UPDATE claims SET {assignments} WHERE claim_id = ?",
+        (*_claim_values(claim)[1:], claim.claim_id),
+    )
+    if cur.rowcount != 1:
+        raise LookupError(f"update_claim: no stored claim with id {claim.claim_id!r}")
+
+
+def get_claim(conn: sqlite3.Connection, claim_id: str) -> Claim | None:
+    row = conn.execute("SELECT * FROM claims WHERE claim_id = ?", (claim_id,)).fetchone()
+    return row_to_claim(row) if row is not None else None
 
 
 def get_policy(conn: sqlite3.Connection, policy_number: str) -> Policy | None:
@@ -247,20 +280,6 @@ def insert_flag(
     return int(cur.lastrowid)
 
 
-def claim_id_in_use(conn: sqlite3.Connection, claim_id: str) -> bool:
-    """True if a stored claim or any recorded result already uses ``claim_id``.
-
-    Covers intake's ``ROW-<run_id>-<line_no>`` keys, which have results but no
-    stored claim, so a new claim can never share their history.
-    """
-    row = conn.execute(
-        "SELECT EXISTS (SELECT 1 FROM claims WHERE claim_id = ?)"
-        " OR EXISTS (SELECT 1 FROM check_results WHERE claim_id = ?)",
-        (claim_id, claim_id),
-    ).fetchone()
-    return bool(row[0])
-
-
 def get_latest_run_for_claim(conn: sqlite3.Connection, claim_id: str) -> str | None:
     """The ``run_id`` that most recently recorded a result for ``claim_id``."""
     row = conn.execute(
@@ -269,3 +288,33 @@ def get_latest_run_for_claim(conn: sqlite3.Connection, claim_id: str) -> str | N
         (claim_id,),
     ).fetchone()
     return row["run_id"] if row is not None else None
+
+
+# --- claim versions (append-only) ------------------------------------------
+
+
+def insert_claim_version(
+    conn: sqlite3.Connection,
+    run_id: str,
+    claim: Claim,
+    *,
+    replaced_at: str | None = None,
+) -> int:
+    """Save ``claim`` as the version that ``run_id`` is about to replace."""
+    cur = conn.execute(
+        f"INSERT INTO claim_versions (run_id, replaced_at, {', '.join(CLAIM_COLUMNS)})"
+        f" VALUES (?, ?, {', '.join('?' * len(CLAIM_COLUMNS))})",
+        (run_id, replaced_at or _now(), *_claim_values(claim)),
+    )
+    return int(cur.lastrowid)
+
+
+def get_claim_versions(conn: sqlite3.Connection, claim_id: str) -> list[ClaimVersion]:
+    """Every superseded version of a claim, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM claim_versions WHERE claim_id = ? ORDER BY id", (claim_id,)
+    ).fetchall()
+    return [
+        ClaimVersion(row["run_id"], datetime.fromisoformat(row["replaced_at"]), row_to_claim(row))
+        for row in rows
+    ]

@@ -157,7 +157,7 @@ def _results_with_flags(
         " JOIN check_runs ru ON ru.run_id = r.run_id"
         f" {'LEFT JOIN' if unflagged else 'JOIN'} flags f ON f.run_id = r.run_id AND f.claim_id = r.claim_id"
         f" WHERE {where}"
-        " ORDER BY ru.started_at DESC, r.run_id, r.id, f.id",
+        " ORDER BY ru.started_at DESC, ru.rowid DESC, r.id, f.id",
         params,
     ).fetchall()
     claims = get_claims(conn, {row["claim_id"] for row in rows})
@@ -221,6 +221,41 @@ def history(conn: sqlite3.Connection, filters: Filters) -> list[QueueItem]:
     return [item for item in items if filters.matches_history(item)]
 
 
+@dataclass
+class Group:
+    """Consecutive results for one claim that said the same thing.
+
+    ``first`` opened the group (the oldest result in it); ``again`` holds the
+    later results with the same outcome and the same set of rules. Grouping
+    is display only: every result stays stored.
+    """
+
+    first: QueueItem
+    again: list[QueueItem] = field(default_factory=list)
+
+
+def group_repeats(items: list[QueueItem], version_runs: set[str]) -> list[Group]:
+    """Collapse repeat checks of one claim, newest group first.
+
+    ``items`` is a claim's history, newest first. Walking oldest to newest, a
+    result joins the open group when its outcome and rule ids match and its
+    run did not replace the claim (``version_runs``); otherwise it opens a new
+    group. Intake rows carry the ``INTAKE`` rule, so they never merge with
+    rule results.
+    """
+    groups: list[Group] = []
+    signature: tuple[str, frozenset[str]] | None = None
+    for item in reversed(items):
+        current = (item.outcome, frozenset(item.rule_ids))
+        if groups and current == signature and item.run_id not in version_runs:
+            groups[-1].again.append(item)
+        else:
+            groups.append(Group(item))
+            signature = current
+    groups.reverse()
+    return groups
+
+
 def run_source(conn: sqlite3.Connection, run_id: str) -> str | None:
     row = conn.execute("SELECT source FROM check_runs WHERE run_id = ?", (run_id,)).fetchone()
     return row["source"] if row is not None else None
@@ -248,8 +283,8 @@ def list_runs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def claim_history(conn: sqlite3.Connection, claim_id: str) -> list[QueueItem]:
     """Every result recorded for one claim, flagged or not, newest run first.
 
-    Includes intake rows that resubmitted this claim_id; intake keys those
-    ``ROW-<run_id>-<line_no>`` (see app/intake.py).
+    Includes malformed intake rows that carried this claim_id; intake keys
+    those ``ROW-<run_id>-<line_no>`` when the id is taken (see app/intake.py).
     """
     where = (
         "r.claim_id = ? OR r.claim_id IN (SELECT claim_id FROM flags"

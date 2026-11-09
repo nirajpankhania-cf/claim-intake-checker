@@ -15,7 +15,7 @@ stored and displayed verbatim and never interpreted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -73,6 +73,19 @@ class Policy:
     expiration_date: date
     cancellation_date: date | None
     policy_limit: Decimal
+
+
+@dataclass(frozen=True)
+class ClaimVersion:
+    """A superseded version of a claim, kept when a resubmission changed it.
+
+    ``claim`` is the claim as it was before ``run_id`` replaced it. Identical
+    resubmissions write no version, so the trail only grows on a change.
+    """
+
+    run_id: str
+    replaced_at: datetime
+    claim: Claim
 
 
 @dataclass(frozen=True)
