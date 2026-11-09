@@ -8,34 +8,41 @@ receive the fields below.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from collections import Counter
-import json
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from app import review
-from app.intake import INTAKE_RULE_ID, IntakeFileError
-from app.models import Claim
+from app.intake import INTAKE_RULE_ID, IntakeFileError, changed_fields
+from app.models import Claim, ClaimVersion
 from app.rules import ALL_RULES
 from app.rules.policy_not_found import RULE_ID as NO_POLICY_RULE
 
 SAMPLE_CSV = Path(__file__).resolve().parent.parent / "data" / "claims.csv"
 SAMPLE_MISSING = "The sample file isn't there yet. Run make seed, then try again."
-ALREADY_SUBMITTED = "This claim was already submitted, so it was not checked again."
+LEGACY_RESUBMISSION = "Submitted again under the earlier rules; it was not checked then."
 
-READY, LOOK, ALREADY, UNREADABLE = "ready", "look", "already", "unreadable"
+READY, LOOK, UNREADABLE = "ready", "look", "unreadable"
 PASSED, FLAGGED, NOT_RUN = "passed", "flagged", "not_run"
 STATE_LABELS = {PASSED: "Passed", FLAGGED: "Flagged", NOT_RUN: "Not checked"}
+# How a claim in a run relates to what was stored before it.
+NEW, UPDATED, RECHECKED = "new", "updated", "rechecked"
+CHANGE_LABELS = {UPDATED: "Updated", RECHECKED: "Re-checked, no change"}
 QUEUES = {
     "gates": "Policy gates",
     "other": "Other checks",
-    "resubmitted": "Resubmitted",
     "malformed": "Malformed data",
     "ready": "Ready for adjuster",
 }
+# Fields whose old and new values may be shown when a claim is updated. The
+# rest are free text or identifiers typed by a person: only "changed" is said.
+SHOWN_DIFF_FIELDS = frozenset(
+    {"policy_number", "loss_date", "report_date", "loss_type", "claimed_amount", "third_party_involved", "submitted_via"}
+)
 PAGE_SIZE = 50  # how many rows one page of a table shows; display only
 
 
@@ -95,6 +102,11 @@ class DeskRow:
     policy_gate: bool
     loss_date: str = "—"
     report_date: str = "—"
+    change: str = NEW
+
+    @property
+    def change_label(self) -> str:
+        return CHANGE_LABELS.get(self.change, "")
 
     @property
     def flag_count(self) -> int:
@@ -146,6 +158,8 @@ def plain_file_error(error: IntakeFileError) -> str:
 
 
 def _unreadable_reason(flag: review.FlagRow, labels: dict[str, str]) -> str:
+    if flag.inputs.get("kind") == "resubmission":  # recorded before 2026-11-09, when S8 rows were skipped
+        return LEGACY_RESUBMISSION
     problems = "; ".join(plain_problem(p, labels) for p in flag.inputs.get("problems", []))
     line = flag.inputs.get("line_no")
     where = f"Line {line} of the file" if line else "This row"
@@ -153,9 +167,17 @@ def _unreadable_reason(flag: review.FlagRow, labels: dict[str, str]) -> str:
 
 
 def to_rows(
-    conn: sqlite3.Connection, items: list[review.QueueItem], labels: dict[str, str]
+    conn: sqlite3.Connection,
+    items: list[review.QueueItem],
+    labels: dict[str, str],
+    changes: dict[str, str] | None = None,
 ) -> list[DeskRow]:
-    """Turn stored results into display rows, one per result."""
+    """Turn stored results into display rows, one per result.
+
+    ``changes`` (from ``change_markers``) says which claims were updated or
+    re-checked in the run being shown; without it every row reads as new.
+    """
+    marks = changes or {}
     wanted = {i.claim_id for i in items} | {
         flag.inputs.get("submitted_claim_id") or "" for i in items if (flag := _intake_flag(i))
     }
@@ -181,23 +203,23 @@ def to_rows(
                     policy_gate=any(c.policy_gate and c.state == FLAGGED for c in checks),
                     loss_date=claim.loss_date.isoformat() if claim else "—",
                     report_date=claim.report_date.isoformat() if claim else "—",
+                    change=marks.get(item.claim_id, NEW),
                 )
             )
             continue
         # A row that never reached the rules: show what was submitted, keyed
         # by the claim number on the row, never the internal ROW- key.
-        already = flag.inputs.get("kind") == "resubmission"
         submitted = flag.inputs.get("submitted_claim_id") or ""
         raw = flag.inputs.get("row") or {}
         rows.append(
             DeskRow(
                 claim_id=submitted or "No claim number",
-                has_page=already and submitted in claims,
+                has_page=bool(submitted) and submitted in claims,
                 policy_number=raw.get("policy_number") or "—",
                 policyholder=raw.get("policyholder_name") or "—",
-                status=ALREADY if already else UNREADABLE,
+                status=UNREADABLE,
                 outcome=outcome,
-                reasons=[ALREADY_SUBMITTED if already else _unreadable_reason(flag, labels)],
+                reasons=[_unreadable_reason(flag, labels)],
                 checked_on=item.checked_on,
                 checks=[],
                 policy_gate=False,
@@ -208,11 +230,6 @@ def to_rows(
     return rows
 
 
-def _is_resubmission(item: review.QueueItem) -> bool:
-    flag = _intake_flag(item)
-    return flag is not None and flag.inputs.get("kind") == "resubmission"
-
-
 def _claim_key(item: review.QueueItem) -> tuple[str, str]:
     """What makes two results the same claim. Rows that were never stored have
     a different internal key on every upload, so they match on what was submitted."""
@@ -220,20 +237,15 @@ def _claim_key(item: review.QueueItem) -> tuple[str, str]:
     if flag is None:
         return ("claim", item.claim_id)
     submitted = flag.inputs.get("submitted_claim_id") or ""
-    if _is_resubmission(item):
-        return ("claim", submitted)
     return ("row", submitted or json.dumps(flag.inputs.get("row") or item.claim_id, sort_keys=True))
 
 
 def latest_per_claim(items: list[review.QueueItem]) -> list[review.QueueItem]:
-    """Each claim once, from results ordered newest first. A real check always
-    wins over a copy that was skipped as a resubmission. Only affects the view:
-    every result stays stored and on the claim's audit trail."""
+    """Each claim once, from results ordered newest first. Only affects the
+    view: every result stays stored and on the claim's audit trail."""
     chosen: dict[tuple[str, str], review.QueueItem] = {}
     for item in items:
-        key = _claim_key(item)
-        if key not in chosen or (_is_resubmission(chosen[key]) and not _is_resubmission(item)):
-            chosen[key] = item
+        chosen.setdefault(_claim_key(item), item)
     return list(chosen.values())
 
 
@@ -249,7 +261,6 @@ def split_queues(rows: list[DeskRow]) -> dict[str, list[DeskRow]]:
     return {
         "gates": [r for r in rows if r.status == LOOK and r.policy_gate],
         "other": [r for r in rows if r.status == LOOK and not r.policy_gate],
-        "resubmitted": [r for r in rows if r.status == ALREADY],
         "malformed": [r for r in rows if r.status == UNREADABLE],
         "ready": [r for r in rows if r.status == READY],
     }
@@ -313,18 +324,26 @@ def _utc_text(moment: datetime) -> str:
 
 
 def counts(rows: list[DeskRow]) -> dict[str, int]:
-    """The result-page counts: the two outcomes, then why claims need review."""
+    """The result-page counts: the two outcomes, why claims need review, and
+    how many claims in the run had been seen before."""
     n = Counter(row.status for row in rows)
     gates = sum(row.status == LOOK and row.policy_gate for row in rows)
     return {
         "Received": len(rows),
         "Ready for adjuster": n[READY],
-        "Needs review": n[LOOK] + n[ALREADY] + n[UNREADABLE],
+        "Needs review": n[LOOK] + n[UNREADABLE],
         "Policy gates": gates,
         "Other checks": n[LOOK] - gates,
-        "Resubmitted": n[ALREADY],
         "Malformed data": n[UNREADABLE],
+        "Updated": sum(row.change == UPDATED for row in rows),
+        "Re-checked unchanged": sum(row.change == RECHECKED for row in rows),
     }
+
+
+def nothing_changed(rows: list[DeskRow]) -> bool:
+    """True when every checked claim in the run had been checked before, unchanged."""
+    checked = [row for row in rows if row.status != UNREADABLE]
+    return bool(checked) and all(row.change == RECHECKED for row in checked)
 
 
 def check_summary(rows: list[DeskRow]) -> list[dict[str, object]]:
@@ -342,14 +361,38 @@ def check_summary(rows: list[DeskRow]) -> list[dict[str, object]]:
     ]
 
 
-def rechecked_count(conn: sqlite3.Connection, run_id: str) -> int:
-    """Claims in this run that already had a check result before it."""
-    return conn.execute(
-        "SELECT COUNT(*) FROM check_results r WHERE r.run_id = ?"
+def change_markers(conn: sqlite3.Connection, run_id: str) -> dict[str, str]:
+    """For each claim in the run that was seen before: ``UPDATED`` if this run
+    replaced it (a version was saved), else ``RECHECKED`` if it had an earlier
+    rule check. A claim first seen as a malformed row counts as new."""
+    marks: dict[str, str] = {}
+    rechecked = conn.execute(
+        "SELECT r.claim_id FROM check_results r WHERE r.run_id = ?"
         " AND r.claim_id IN (SELECT claim_id FROM claims)"
-        " AND EXISTS (SELECT 1 FROM check_results o WHERE o.claim_id = r.claim_id AND o.id < r.id)",
+        " AND EXISTS (SELECT 1 FROM check_results o WHERE o.claim_id = r.claim_id AND o.id < r.id"
+        "   AND NOT EXISTS (SELECT 1 FROM flags f WHERE f.run_id = o.run_id"
+        "                   AND f.claim_id = o.claim_id AND f.rule_id = ?))",
+        (run_id, INTAKE_RULE_ID),
+    )
+    marks.update({row[0]: RECHECKED for row in rechecked})
+    updated = conn.execute("SELECT claim_id FROM claim_versions WHERE run_id = ?", (run_id,))
+    marks.update({row[0]: UPDATED for row in updated})
+    return marks
+
+
+def in_file_repeats(conn: sqlite3.Connection, run_id: str) -> int:
+    """Rows in the upload that repeated a claim_id and were dropped.
+
+    Every kept row leaves exactly one result (a checked claim or a malformed
+    row), and ``check_runs.claim_count`` is every row in the file, so the
+    difference is the dropped repeats. No extra column needed.
+    """
+    row = conn.execute(
+        "SELECT ru.claim_count - (SELECT COUNT(*) FROM check_results r WHERE r.run_id = ru.run_id)"
+        " FROM check_runs ru WHERE ru.run_id = ?",
         (run_id,),
-    ).fetchone()[0]
+    ).fetchone()
+    return max(0, row[0]) if row is not None else 0
 
 
 def _shown(value: object) -> str:
@@ -373,8 +416,10 @@ def claim_fields(claim: Claim, labels: dict[str, str]) -> list[tuple[str, str]]:
     return fields
 
 
-def claim_result(history: list[review.QueueItem], claim_id: str) -> dict[str, object]:
-    """The claim's latest check and how many later copies were skipped."""
+def claim_result(
+    history: list[review.QueueItem], claim_id: str, versions: list[ClaimVersion]
+) -> dict[str, object]:
+    """The claim's latest check, how often it was checked and how often updated."""
     checks = [i for i in history if i.claim_id == claim_id and _intake_flag(i) is None]
     latest = checks[0] if checks else None
     return {
@@ -383,32 +428,77 @@ def claim_result(history: list[review.QueueItem], claim_id: str) -> dict[str, ob
         "reasons": [f.reason for f in latest.flags] if latest else [],
         "checks": check_lines({f.rule_id: f.reason for f in latest.flags}) if latest else [],
         "times_checked": len(checks),
-        "resubmitted": sum(
-            1 for i in history if (f := _intake_flag(i)) and f.inputs.get("kind") == "resubmission"
-        ),
+        "updated": len(versions),
     }
+
+
+def _label(name: str, labels: dict[str, str]) -> str:
+    return labels.get(name, name).split(" (")[0]
+
+
+def describe_changes(old: Claim, new: Claim, labels: dict[str, str]) -> list[str]:
+    """One line per changed field. Values are shown only for the fields in
+    ``SHOWN_DIFF_FIELDS``; anything a person typed freely just says "changed"."""
+    lines = []
+    for name in changed_fields(old, new):
+        label = _label(name, labels)
+        if name in SHOWN_DIFF_FIELDS:
+            lines.append(f"{label}: {_shown(getattr(old, name))} → {_shown(getattr(new, name))}")
+        else:
+            lines.append(f"{label} changed")
+    return lines
+
+
+def version_changes(
+    versions: list[ClaimVersion], current: Claim, labels: dict[str, str]
+) -> dict[str, list[str]]:
+    """What each replacing run changed, keyed by run_id. Each superseded
+    version is compared with the one that followed it, the last with the
+    stored claim."""
+    out = {}
+    for n, version in enumerate(versions):
+        after = versions[n + 1].claim if n + 1 < len(versions) else current
+        out[version.run_id] = describe_changes(version.claim, after, labels)
+    return out
+
+
+def _dates_text(dates: list[str]) -> str:
+    if len(dates) == 1:
+        return dates[0]
+    return ", ".join(dates[:-1]) + " and " + dates[-1]
 
 
 SOURCES = {"csv": "File upload", "form": "Single claim"}
 
 
-def audit_trail(history: list[review.QueueItem], labels: dict[str, str]) -> list[dict[str, object]]:
-    """Every check recorded for a claim, newest first, so its handling can be reconstructed."""
+def audit_trail(
+    history: list[review.QueueItem],
+    versions: list[ClaimVersion],
+    current: Claim,
+    labels: dict[str, str],
+) -> list[dict[str, object]]:
+    """Every check recorded for a claim, newest first, so its handling can be
+    reconstructed. Repeat checks that said the same thing are shown as one
+    entry with the later dates; a run that updated the claim starts a new
+    entry and lists what changed. Nothing stored is altered."""
+    changes = version_changes(versions, current, labels)
     entries = []
-    for item in history:
+    for group in review.group_repeats(history, set(changes)):
+        item = group.first
         flag = _intake_flag(item)
         if flag is None:
             recorded = [f.reason for f in item.flags] or ["All checks passed."]
-        elif flag.inputs.get("kind") == "resubmission":
-            recorded = [ALREADY_SUBMITTED]
         else:
             recorded = [_unreadable_reason(flag, labels)]
+        dates = list(dict.fromkeys(again.checked_on.isoformat() for again in group.again))
         entries.append(
             {
                 "when": _utc_text(item.checked_at),
                 "source": SOURCES.get(item.source, item.source),
                 "outcome": review.OUTCOMES[item.outcome],
                 "recorded": recorded,
+                "updated": changes.get(item.run_id, []),
+                "again": f"Checked again on {_dates_text(dates)} with the same result." if dates else "",
             }
         )
     return entries

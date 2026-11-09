@@ -294,3 +294,23 @@ def test_unflagged_result_has_no_flag_date(seeded: tuple[TestClient, sqlite3.Con
 
     (item,) = review.claim_history(seeded[1], "TEST-CLAIM-0002")
     assert item.flags == [] and item.flagged_on is None
+
+
+def test_group_repeats_collapses_same_outcome_and_rules(seeded: tuple[TestClient, sqlite3.Connection]) -> None:
+    from app import review
+
+    client, conn = seeded
+    record(conn, "RUN-D", DAY2, "TEST-CLAIM-0002", [])
+    record(conn, "RUN-E", DAY3, "TEST-CLAIM-0002", [])
+    record(conn, "RUN-F", "2026-11-04T09:00:00+00:00", "TEST-CLAIM-0002", [r("R2", "Late report")])
+    history = review.claim_history(conn, "TEST-CLAIM-0002")
+
+    groups = review.group_repeats(history, set())
+    assert [(g.first.run_id, [a.run_id for a in g.again]) for g in groups] == [("RUN-F", []), ("RUN-A", ["RUN-D", "RUN-E"])]
+    # A run that replaced the claim starts a new group even with the same result.
+    groups = review.group_repeats(history, {"RUN-E"})
+    assert [(g.first.run_id, [a.run_id for a in g.again]) for g in groups] == [("RUN-F", []), ("RUN-E", []), ("RUN-A", ["RUN-D"])]
+
+    text = client.get("/claims/TEST-CLAIM-0002").text
+    assert text.count("<h3>Run") == 2
+    assert "Checked again with the same result in run <code>RUN-D</code>" in text and "<code>RUN-E</code>" in text

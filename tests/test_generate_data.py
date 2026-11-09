@@ -60,3 +60,20 @@ def test_db_claims_trip_only_the_rule_their_tag_names(generated: Path) -> None:
         match = TAG.match(claim.description or "")
         expected = EXPECTED_RULE.get(match.group(1)) if match else None
         assert fired == ({expected} if expected else set()), (claim.claim_id, claim.description, fired)
+
+
+def test_s8_rows_repeat_a_db_claim_with_a_changed_description(generated: Path) -> None:
+    """The CSV's S8 rows reuse a stored claim_id and report_date and change only
+    the description, so intake overwrites, versions and re-checks the claim."""
+    conn = db.get_connection(generated / "test.db")
+    stored = {r["claim_id"]: db.row_to_claim(r) for r in conn.execute("SELECT * FROM claims")}
+    conn.close()
+    with open(generated / "claims.csv", newline="", encoding="utf-8") as fh:
+        rows = [row for row in csv.DictReader(fh) if row["description"].startswith("SCENARIO S8: resubmission")]
+
+    assert len(rows) == 6
+    for row in rows:
+        original = stored[row["claim_id"]]
+        assert row["report_date"] == original.report_date.isoformat()
+        assert row["description"] != original.description
+        assert row["policy_number"] == original.policy_number

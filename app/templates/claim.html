@@ -33,15 +33,25 @@
   {% endif %}
 
   <h2>Check history</h2>
+  {% if versions %}
+    <p>Updated {{ versions | length }} {{ "time" if versions | length == 1 else "times" }}; earlier versions are kept. Repeat checks with the same outcome and rules are listed under the first of them.</p>
+  {% endif %}
   {% if not history %}
     <p>No check results recorded for this claim yet.</p>
   {% endif %}
-  {% for item in history %}
+  {% for group in groups %}
+    {% set item = group.first %}
     <section>
       {% if item.claim_id != claim_id %}
         <p>Earlier intake row for this claim ID, recorded as <a href="/claims/{{ item.claim_id | urlencode }}">{{ item.claim_id }}</a>.</p>
       {% endif %}
       <h3>Run <code>{{ item.run_id }}</code> ({{ item.source }}, {{ item.run_started_at.isoformat() }}): {{ "Needs review" if item.outcome == "NEEDS_REVIEW" else "Ready for adjuster" }}</h3>
+      {% if changes.get(item.run_id) %}
+        <p>Updated in this run: {{ changes[item.run_id] | join("; ") }}.</p>
+      {% endif %}
+      {% if group.again %}
+        <p>Checked again with the same result in {% for again in group.again %}run <code>{{ again.run_id }}</code> ({{ again.source }}, {{ again.run_started_at.isoformat() }}){{ ", " if not loop.last }}{% endfor %}.</p>
+      {% endif %}
       {% if not item.flags %}<p>No flags.</p>{% endif %}
       {% for flag in item.flags %}
         <article>

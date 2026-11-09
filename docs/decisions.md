@@ -53,6 +53,8 @@
 | 2026-11-09 | A `claim_id` that has check results but no stored claim (a malformed row recorded under its id, or a `ROW-` key) does not block a valid submission of that id; it is earlier history for the id. `db.claim_id_in_use` removed | Team |
 | 2026-11-09 | Form: a claim_id already on file re-shows the form as a confirmation (200) naming the fields that differ (labels only, never values) with a "Replace and re-check" button. The hidden `replace` token carries the claim_id, and the overwrite only happens when it matches the id submitted, so editing the id on that page can't replace a different claim | Niraj |
 | 2026-11-09 | `make reset` (`scripts/reset_db.py`) deletes the DB file and seeds again, for trying behaviour from a clean state. Development only; the web app has no delete path | Niraj |
+| 2026-11-09 | Audit trail (desk claim page and `/claims/{id}`): consecutive results with the same outcome and the same rule ids are shown as one entry with the later dates ("Checked again on … with the same result"). A run that replaced the claim starts a new entry listing which fields changed; values are shown only for dates, policy number, loss type, amount, third-party and channel, free text just says "changed". Display only; every result stays stored | Niraj |
+| 2026-11-09 | Desk: the "Resubmitted" queue is gone. A re-checked claim sits in the queue its outcome puts it in, marked "Updated" or "Re-checked, no change"; the run header counts both and the repeats dropped from the file | Team |
 | 2026-11-09 | Deleting a claim is deferred to a separate issue. A hard delete conflicts with append-only history; if wanted, the likely shape is a "withdrawn" marker that hides the claim and keeps every result | Niraj |
 
 ## Scenarios

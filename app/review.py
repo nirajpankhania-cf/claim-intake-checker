@@ -221,6 +221,41 @@ def history(conn: sqlite3.Connection, filters: Filters) -> list[QueueItem]:
     return [item for item in items if filters.matches_history(item)]
 
 
+@dataclass
+class Group:
+    """Consecutive results for one claim that said the same thing.
+
+    ``first`` opened the group (the oldest result in it); ``again`` holds the
+    later results with the same outcome and the same set of rules. Grouping
+    is display only: every result stays stored.
+    """
+
+    first: QueueItem
+    again: list[QueueItem] = field(default_factory=list)
+
+
+def group_repeats(items: list[QueueItem], version_runs: set[str]) -> list[Group]:
+    """Collapse repeat checks of one claim, newest group first.
+
+    ``items`` is a claim's history, newest first. Walking oldest to newest, a
+    result joins the open group when its outcome and rule ids match and its
+    run did not replace the claim (``version_runs``); otherwise it opens a new
+    group. Intake rows carry the ``INTAKE`` rule, so they never merge with
+    rule results.
+    """
+    groups: list[Group] = []
+    signature: tuple[str, frozenset[str]] | None = None
+    for item in reversed(items):
+        current = (item.outcome, frozenset(item.rule_ids))
+        if groups and current == signature and item.run_id not in version_runs:
+            groups[-1].again.append(item)
+        else:
+            groups.append(Group(item))
+            signature = current
+    groups.reverse()
+    return groups
+
+
 def run_source(conn: sqlite3.Connection, run_id: str) -> str | None:
     row = conn.execute("SELECT source FROM check_runs WHERE run_id = ?", (run_id,)).fetchone()
     return row["source"] if row is not None else None

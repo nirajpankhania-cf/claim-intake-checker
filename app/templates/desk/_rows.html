@@ -11,11 +11,12 @@
   </div>
 {% endmacro %}
 
-{% macro claim_cell(row, link) -%}
+{% macro claim_cell(row, link, change_labels={}) -%}
   {% if row.has_page %}<a href="/desk/claims/{{ row.claim_id | urlencode }}{% if link %}?{{ link | urlencode }}{% endif %}">{{ row.claim_id }}</a>{% else %}{{ row.claim_id }}{% endif %}
+  {%- if change_labels and row.change in change_labels %} <span class="badge change">{{ change_labels[row.change] }}</span>{% endif %}
 {%- endmacro %}
 
-{% macro table(rows, show_outcome=false, show_reasons=true, columns=[], link={}) %}
+{% macro table(rows, show_outcome=false, show_reasons=true, columns=[], link={}, change_labels={}) %}
   <div class="scroll">
     <table class="grid">
       <thead>
@@ -33,7 +34,7 @@
       <tbody>
         {% for row in rows %}
           <tr>
-            <td class="id">{{ claim_cell(row, link) }}</td>
+            <td class="id">{{ claim_cell(row, link, change_labels) }}</td>
             <td class="id">{{ row.policy_number }}</td>
             <td class="person">{{ row.policyholder }}</td>
             <td class="id">{{ row.loss_date }}</td>

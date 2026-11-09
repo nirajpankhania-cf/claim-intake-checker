@@ -208,9 +208,17 @@ async def claim_detail(
             break
     else:
         raise HTTPException(status_code=404, detail="No claim or intake row with that ID.")
-    return templates.TemplateResponse(
-        request, "claim.html", {"claim_id": claim_id, "claim": claim, "history": history}
-    )
+    versions = db.get_claim_versions(conn, claim_id)
+    changes = desk.version_changes(versions, claim, FIELD_LABELS) if claim is not None else {}
+    context = {
+        "claim_id": claim_id,
+        "claim": claim,
+        "history": history,
+        "groups": review.group_repeats(history, set(changes)),
+        "changes": changes,
+        "versions": versions,
+    }
+    return templates.TemplateResponse(request, "claim.html", context)
 
 
 def _form_results(conn: sqlite3.Connection, run_id: str | None) -> list[sqlite3.Row]:
@@ -398,13 +406,16 @@ async def desk_run(
     if review.run_source(conn, run_id) is None:
         return _desk_not_found(request, "We couldn't find that check.")
     items = review.history(conn, review.Filters(run_id=run_id))
-    rows = desk.to_rows(conn, items, FIELD_LABELS)
+    rows = desk.to_rows(conn, items, FIELD_LABELS, desk.change_markers(conn, run_id))
     queues = desk.split_queues(rows)
     current = queue if queue in queues or queue == "summary" else desk.first_queue(queues)
     context = {
         "rows": rows,
         "run_id": run_id,
         "counts": desk.counts(rows),
+        "change_labels": desk.CHANGE_LABELS,
+        "repeats": desk.in_file_repeats(conn, run_id),
+        "nothing_changed": desk.nothing_changed(rows),
         "checked_on": review.utc_date(items[0].run_started_at) if items else None,
         "source": desk.SOURCES.get(review.run_source(conn, run_id) or "", ""),
         "tabs": [(name, label, len(queues[name])) for name, label in desk.QUEUES.items()],
@@ -413,9 +424,7 @@ async def desk_run(
         "listing": desk.paginate(queues.get(current, []), page),
         "columns": desk.CHECKS,
         "checks": desk.check_summary(rows),
-        "rechecked": desk.rechecked_count(conn, run_id),
         "overlaps": sum(row.flag_count > 1 for row in rows),
-        "nothing_new": not (queues["gates"] or queues["other"] or queues["ready"]) and bool(queues["resubmitted"]),
     }
     return templates.TemplateResponse(request, "desk/result.html", context)
 
@@ -478,12 +487,13 @@ async def desk_claim(
         claim = review.get_claim(conn, candidate)
         if claim is not None:
             history_items = review.claim_history(conn, candidate)
+            versions = db.get_claim_versions(conn, candidate)
             context = {
                 "claim_id": candidate,
                 "claim": claim,
                 "fields": desk.claim_fields(claim, FIELD_LABELS),
-                "result": desk.claim_result(history_items, candidate),
-                "audit": desk.audit_trail(history_items, FIELD_LABELS),
+                "result": desk.claim_result(history_items, candidate, versions),
+                "audit": desk.audit_trail(history_items, versions, claim, FIELD_LABELS),
                 "state_labels": desk.STATE_LABELS,
                 "nav": _queue_position(conn, run, queue, candidate),
                 "run_id": run,

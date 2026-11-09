@@ -14,8 +14,11 @@
     <div>
       <h1>Work queue</h1>
       <p class="meta">
-        {% if checked_on %}Checked {{ checked_on.isoformat() }} · {{ source }}{% endif %}
-        {% if rechecked %} · {{ rechecked }} of these {{ "claim" if rechecked == 1 else "claims" }} had been checked before; earlier results are kept{% endif %}
+        {%- if checked_on %}Checked {{ checked_on.isoformat() }} · {{ source }}{% endif -%}
+        {% if counts["Updated"] %} · {{ counts["Updated"] }} updated{% endif -%}
+        {% if counts["Re-checked unchanged"] %} · {{ counts["Re-checked unchanged"] }} re-checked with no change{% endif -%}
+        {% if counts["Updated"] or counts["Re-checked unchanged"] %}; earlier results are kept{% endif -%}
+        {% if repeats %} · {{ repeats }} repeated {{ "row" if repeats == 1 else "rows" }} in the file {{ "was" if repeats == 1 else "were" }} dropped (latest report date kept){% endif %}
       </p>
     </div>
     <dl class="kpis">
@@ -25,10 +28,9 @@
     </dl>
   </header>
 
-  {% if nothing_new %}
+  {% if nothing_changed %}
     <p class="alert" role="status">
-      <strong>Nothing new was checked.</strong> Every claim in this file had already been submitted.
-      See the <a href="?queue=resubmitted">resubmitted rows</a>{% if counts["Malformed data"] %} and the <a href="?queue=malformed">malformed rows</a>{% endif %}.
+      <strong>Nothing in this file had changed.</strong> Every claim had been checked before and was checked again; earlier results are kept.{% if counts["Malformed data"] %} See the <a href="?queue=malformed">malformed rows</a>.{% endif %}
     </p>
   {% endif %}
 
@@ -57,15 +59,15 @@
     {% elif listing.total %}
       {% set link = {"run": run_id, "queue": queue} %}
       {{ list.pager(listing, {"queue": queue}) }}
-      {% if queue in ("resubmitted", "malformed") %}
+      {% if queue == "malformed" %}
         <p class="legend first">The checks did not run on these rows, so they need review.</p>
         {{ list.table(listing.rows, link=link) }}
       {% elif queue == "ready" %}
-        {{ list.table(listing.rows, show_reasons=false, columns=columns, link=link) }}
+        {{ list.table(listing.rows, show_reasons=false, columns=columns, link=link, change_labels=change_labels) }}
       {% else %}
-        {{ list.table(listing.rows, columns=columns, link=link) }}
+        {{ list.table(listing.rows, columns=columns, link=link, change_labels=change_labels) }}
       {% endif %}
-      {% if queue not in ("resubmitted", "malformed") %}<p class="legend">✓ passed · ⚑ flagged · – couldn't be checked because no policy was found</p>{% endif %}
+      {% if queue != "malformed" %}<p class="legend">✓ passed · ⚑ flagged · – couldn't be checked because no policy was found{% if counts["Updated"] or counts["Re-checked unchanged"] %} · Updated: this upload replaced the stored claim; the earlier version is kept{% endif %}</p>{% endif %}
       {% if listing.pages > 1 %}{{ list.pager(listing, {"queue": queue}) }}{% endif %}
     {% else %}
       <p class="empty">Nothing in {{ queue_label | lower }} for this check.</p>

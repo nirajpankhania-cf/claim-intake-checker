@@ -56,7 +56,7 @@
       </section>
 
       <section>
-        <h2>Claim as submitted</h2>
+        <h2>{{ "Claim as last submitted" if result.updated else "Claim as submitted" }}</h2>
         <dl class="fields">
           {% for label, value in fields %}
             <div {% if loop.index0 == 9 %}class="full"{% endif %}><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
@@ -75,14 +75,16 @@
                 <span class="id">{{ entry.when }}</span>
                 <strong>{{ entry.outcome }}</strong> · {{ entry.source }}
                 {% for text in entry.recorded %}<p class="reason">{{ text }}</p>{% endfor %}
+                {% if entry.updated %}<p class="reason"><strong>Updated:</strong> {{ entry.updated | join("; ") }}.</p>{% endif %}
+                {% if entry.again %}<p class="reason">{{ entry.again }}</p>{% endif %}
               </li>
             {% endfor %}
           </ol>
         {% else %}
           <p class="empty">No checks recorded for this claim yet.</p>
         {% endif %}
-        {% if result.resubmitted %}
-          <p class="legend">This claim was submitted again {{ result.resubmitted }} {{ "time" if result.resubmitted == 1 else "times" }}. Those copies were not checked again.</p>
+        {% if result.updated %}
+          <p class="legend">This claim was updated {{ result.updated }} {{ "time" if result.updated == 1 else "times" }}; earlier versions are kept. Repeat checks with the same result are shown as one entry.</p>
         {% endif %}
       </section>
     </aside>

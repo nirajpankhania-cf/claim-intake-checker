@@ -159,9 +159,23 @@ Read-only. Queries are shared with the history page (CIC-31).
 - `GET /review?run_id=&rule=&date_from=&date_to=` lists flagged results,
   newest run first. A bad date shows an error and no rows (400). The intake
   redirect's `accepted`, `skipped` and `malformed` counts show as a banner.
-- `GET /claims/{claim_id}` shows the claim as submitted and every result and
-  flag recorded for it. For an `INTAKE` row with no stored claim it shows the
-  raw row from the flag. Unknown IDs are 404.
+- `GET /claims/{claim_id}` shows the claim as last submitted and every result
+  and flag recorded for it. Consecutive results with the same outcome and
+  rule ids are listed under the first of them ("Checked again with the same
+  result in run …"); a run that replaced the claim is listed on its own with
+  what changed. For an `INTAKE` row with no stored claim it shows the raw row
+  from the flag. Unknown IDs are 404.
+
+## Review desk (`app/desk.py`)
+
+Plain-language pages under `/desk` over the same data. The run page splits a
+run into Policy gates, Other checks, Malformed data and Ready for adjuster;
+a claim that had been checked before carries an "Updated" (this upload
+replaced it; the old version is kept) or "Re-checked, no change" marker, and
+the header counts both plus the repeated rows dropped from the file. The
+claim page shows the current claim, its latest check and an audit trail in
+which repeat checks with the same result are one entry and each update lists
+the fields that changed (values only for non-free-text fields).
 
 ## History and export (`app/history.py`)
 
