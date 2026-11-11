@@ -24,7 +24,7 @@
   </header>
 
   <dl class="facts">
-    <div><dt>Policy</dt><dd>{{ claim.policy_number }}</dd></div>
+    <div><dt>Policy</dt><dd><a href="#policy">{{ claim.policy_number }}</a></dd></div>
     <div><dt>Policyholder</dt><dd>{{ claim.policyholder_name }}</dd></div>
     <div><dt>Loss date</dt><dd>{{ claim.loss_date.isoformat() }}</dd></div>
     <div><dt>Reported</dt><dd>{{ claim.report_date.isoformat() }}</dd></div>
@@ -66,6 +66,32 @@
     </div>
 
     <aside>
+      <section id="policy">
+        <h2>Policy {{ policy.number }}</h2>
+        {% if policy.found %}
+          <dl class="policy">
+            {% for label, value in policy.fields %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+          </dl>
+        {% else %}
+          <p class="empty">No policy on file with this number, so the checks that need a policy could not run.</p>
+        {% endif %}
+        <h3>Other claims on this policy</h3>
+        {% if policy.others %}
+          <table class="grid mini">
+            <tbody>
+              {% for other in policy.others %}
+                <tr>
+                  <td><a class="id" href="/desk/claims/{{ other.claim_id | urlencode }}">{{ other.claim_id }}</a><br><span class="id">{{ other.loss_date }}</span> · {{ other.loss_type }}</td>
+                  <td>{{ other.outcome }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="empty">None.</p>
+        {% endif %}
+      </section>
+
       <section>
         <h2>Audit trail</h2>
         {% if audit %}

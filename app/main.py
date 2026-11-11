@@ -494,6 +494,7 @@ async def desk_claim(
                 "fields": desk.claim_fields(claim, FIELD_LABELS),
                 "result": desk.claim_result(history_items, candidate, versions),
                 "audit": desk.audit_trail(history_items, versions, claim, FIELD_LABELS),
+                "policy": desk.policy_panel(conn, claim),
                 "state_labels": desk.STATE_LABELS,
                 "nav": _queue_position(conn, run, queue, candidate),
                 "run_id": run,

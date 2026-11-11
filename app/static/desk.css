@@ -175,6 +175,14 @@ button.ghost:hover, .button.ghost:hover { background: var(--wash); }
 .fields dt { color: var(--muted); font-size: 12px; }
 .fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+h3 { margin: 14px 0 6px; font-size: 13px; }
+.policy { margin: 0; border-top: 1px solid var(--line); }
+.policy > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--hair); font-size: 13px; }
+.policy dt { color: var(--muted); }
+.policy dd { margin: 0; }
+.grid.mini { border-top: 1px solid var(--line); }
+.grid.mini td { padding: 5px 6px 5px 0; }
+
 .trail { margin: 0; padding: 0; list-style: none; border-left: 1px solid var(--line); font-size: 13px; }
 .trail li { position: relative; padding: 0 0 12px 12px; }
 .trail li::before { content: ""; position: absolute; top: 6px; left: -4px; width: 7px; height: 7px; background: var(--ink); }

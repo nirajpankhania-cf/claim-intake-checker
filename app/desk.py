@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from app import review
+from app import config, db, review
 from app.intake import INTAKE_RULE_ID, IntakeFileError, changed_fields
 from app.models import Claim, ClaimVersion
 from app.rules import ALL_RULES
@@ -502,3 +502,58 @@ def audit_trail(
             }
         )
     return entries
+
+
+# Plain names for the cover types in the policy records.
+COVER_NAMES = {"comprehensive": "Comprehensive", "tpft": "Third party, fire and theft", "tpo": "Third party only"}
+
+
+def _latest_outcomes(conn: sqlite3.Connection, claim_ids: list[str]) -> dict[str, str]:
+    if not claim_ids:
+        return {}
+    marks = ",".join("?" * len(claim_ids))
+    rows = conn.execute(
+        f"SELECT claim_id, outcome FROM check_results WHERE id IN"
+        f" (SELECT MAX(id) FROM check_results WHERE claim_id IN ({marks}) GROUP BY claim_id)",
+        claim_ids,
+    )
+    return {row[0]: review.OUTCOMES[row[1]] for row in rows}
+
+
+def policy_panel(conn: sqlite3.Connection, claim: Claim) -> dict[str, object]:
+    """The stored policy a claim was checked against, and its other claims.
+
+    Read-only, and it judges nothing: the rules decide what is flagged. What a
+    cover type covers and whether the expiry day counts come from app.config,
+    the same settings the rules use.
+    """
+    policy = db.get_policy(conn, claim.policy_number)
+    others = [c for c in db.get_claims_on_policy(conn, claim.policy_number) if c.claim_id != claim.claim_id]
+    outcomes = _latest_outcomes(conn, [c.claim_id for c in others])
+    fields: list[tuple[str, str]] = []
+    if policy is not None:
+        covered = config.COVERED_LOSS_TYPES.get(policy.cover_type, [])
+        expiry = "expiry day covered" if config.EXPIRY_DAY_COVERED else "expiry day not covered"
+        fields = [
+            ("Policyholder", policy.policyholder_name),
+            ("Vehicle", policy.vehicle_reg),
+            ("Cover", COVER_NAMES.get(policy.cover_type, policy.cover_type)),
+            ("Covers", ", ".join(t.replace("_", " ") for t in covered) or "No loss types"),
+            ("In force", f"{policy.effective_date.isoformat()} to {policy.expiration_date.isoformat()} ({expiry})"),
+            ("Cancelled", policy.cancellation_date.isoformat() if policy.cancellation_date else "No"),
+            ("Policy limit", f"{policy.policy_limit:,.2f}"),
+        ]
+    return {
+        "number": claim.policy_number,
+        "found": policy is not None,
+        "fields": fields,
+        "others": [
+            {
+                "claim_id": c.claim_id,
+                "loss_date": c.loss_date.isoformat(),
+                "loss_type": c.loss_type.replace("_", " "),
+                "outcome": outcomes.get(c.claim_id, "Not checked yet"),
+            }
+            for c in others
+        ],
+    }

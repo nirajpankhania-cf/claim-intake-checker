@@ -551,3 +551,42 @@ def test_stylesheet_is_served_and_old_routes_still_work(client: Client) -> None:
     assert linked and test_client.get(linked.group(1)).status_code == 200
     for path in ("/review", "/history", "/intake"):
         assert test_client.get(path).status_code == 200
+
+
+# --- policy panel (CIC-42) ---------------------------------------------------
+
+
+def add_policy(path: Path, policy: Policy) -> None:
+    conn = db.get_connection(path)
+    db.init_db(conn)
+    with conn:
+        db.insert_policy(conn, policy)
+    conn.close()
+
+
+def test_claim_page_shows_the_policy_it_was_checked_against(client: Client) -> None:  # noqa: F811
+    test_client, _, path = client
+    add_policy(path, make_policy(cover_type="tpft", cancellation_date=date(2026, 9, 1)))
+    upload(test_client, to_csv([row(claim_id="TEST-CLAIM-0001"), row(claim_id="TEST-CLAIM-0002", loss_date="2026-07-01")]))
+    text = test_client.get("/desk/claims/TEST-CLAIM-0001").text
+    panel = text[text.index('id="policy"'):text.index("Audit trail")]
+    covered = ", ".join(t.replace("_", " ") for t in config.COVERED_LOSS_TYPES["tpft"])
+    assert "Third party, fire and theft" in panel and f"<dd>{covered}</dd>" in panel
+    assert "2026-01-01 to 2026-12-31" in panel and "<dd>2026-09-01</dd>" in panel and "10,000.00" in panel
+    assert ">TEST-CLAIM-0002</a>" in panel and ">TEST-CLAIM-0001</a>" not in panel
+    assert "Ready for adjuster" in panel and 'href="#policy"' in text
+
+
+def test_claim_page_says_when_there_is_no_policy(client: Client) -> None:  # noqa: F811
+    test_client = client[0]
+    upload(test_client, to_csv([row(policy_number="TEST-POLICY-MISSING")]))
+    text = test_client.get("/desk/claims/TEST-CLAIM-0001").text
+    assert "No policy on file with this number" in text and "Other claims on this policy" in text
+
+
+def test_policy_text_is_escaped(client: Client) -> None:  # noqa: F811
+    test_client, _, path = client
+    add_policy(path, make_policy(policyholder_name="<script>alert(1)</script>"))
+    upload(test_client, to_csv([row()]))
+    text = test_client.get("/desk/claims/TEST-CLAIM-0001").text
+    assert "<script>alert" not in text and "&lt;script&gt;alert(1)&lt;/script&gt;" in text
